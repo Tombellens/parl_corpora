@@ -1,0 +1,8 @@
+{
+  "model": "OPUS-MT via EasyNMT (ParlaMint sentence-by-sentence methodology)",
+  "total_texts": 1142816,
+  "total_sentences_translated": 9215509,
+  "avg_sentences_per_text": 8.063860673984264,
+  "translation_speed_texts_per_sec": 4.8641003728857415,
+  "total_duration_minutes": 3917.682313100497
+}
