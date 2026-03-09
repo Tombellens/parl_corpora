@@ -123,22 +123,14 @@ def save_checkpoint(next_chunk_id: int):
 
 def count_rows(path: str) -> int:
     """
-    Estimate row count from file size + a small sample.
-    Proper line counting via binary scan overcounts when sentence text
-    contains embedded newlines inside quoted CSV fields.
+    Count rows correctly using pandas on the smallest column.
+    Binary newline counting overcounts when sentence text contains
+    quoted newlines; pandas handles CSV quoting correctly.
     """
-    file_size = os.path.getsize(path)
-    sample_size = 5_000
-    sample_bytes = 0
-    with open(path, "rb") as f:
-        for i, line in enumerate(f):
-            sample_bytes += len(line)
-            if i >= sample_size:
-                break
-    if sample_bytes == 0:
-        return 0
-    avg_bytes_per_row = sample_bytes / sample_size
-    return max(1, int(file_size / avg_bytes_per_row) - 1)
+    total = 0
+    for chunk in pd.read_csv(path, usecols=["country"], chunksize=1_000_000):
+        total += len(chunk)
+    return total
 
 
 # ---------------------------------------------------------------------------
