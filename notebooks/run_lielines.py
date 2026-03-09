@@ -28,7 +28,6 @@ from tqdm import tqdm
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
-    TextClassificationPipeline,
 )
 
 # ---------------------------------------------------------------------------
@@ -38,8 +37,8 @@ INPUT_FILE       = "/home/tom/data/sentence_corpus.csv"
 OUTPUT_FILE      = "/home/tom/data/sentence_corpus_predicted.csv"
 CHECKPOINT_FILE  = "/home/tom/data/sentence_corpus_predicted.checkpoint.json"
 MODEL            = "mmochtak/lieline"
-BATCH_SIZE       = 128    # pipeline batch size per GPU — tune to fill VRAM
-CHUNK_SIZE       = 5_000  # rows per work unit dispatched to a GPU worker
+BATCH_SIZE       = 1024   # sentences per GPU forward pass — tune to fill VRAM
+CHUNK_SIZE       = 50_000 # rows per work unit dispatched to a GPU worker
 MAX_LENGTH       = 512    # BERT token limit
 QUEUE_DEPTH      = 4      # max chunks in flight per GPU (backpressure)
 # ---------------------------------------------------------------------------
@@ -51,8 +50,9 @@ QUEUE_DEPTH      = 4      # max chunks in flight per GPU (backpressure)
 
 def gpu_worker(rank: int, num_gpus: int, input_q: mp.Queue, output_q: mp.Queue, model_name: str):
     """
-    Runs in a separate process. Pulls (chunk_id, rows_df) from input_q,
-    runs inference, pushes (chunk_id, labels, scores) to output_q.
+    Runs in a separate process. Pulls (chunk_id, sentences) from input_q,
+    runs batched inference directly on the model (no pipeline overhead),
+    pushes (chunk_id, labels, scores) to output_q.
     Exits when it receives None (sentinel).
     """
     device = f"cuda:{rank}"
@@ -60,33 +60,46 @@ def gpu_worker(rank: int, num_gpus: int, input_q: mp.Queue, output_q: mp.Queue, 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForSequenceClassification.from_pretrained(
         model_name, torch_dtype=torch.float16
-    )
-    pipe = TextClassificationPipeline(
-        model=model,
-        tokenizer=tokenizer,
-        device=rank,
-        batch_size=BATCH_SIZE,
-    )
+    ).to(device)
+    model.eval()
 
-    print(f"  [GPU {rank}] Ready.", flush=True)
+    id2label = model.config.id2label
+    print(f"  [GPU {rank}] Ready — {torch.cuda.get_device_name(rank)}", flush=True)
 
     while True:
         item = input_q.get()
-        if item is None:          # sentinel — shut down
+        if item is None:
             output_q.put(None)
             break
 
         chunk_id, sentences = item
+        all_labels = []
+        all_scores = []
 
-        results = pipe(
-            sentences,
-            truncation=True,
-            max_length=MAX_LENGTH,
-        )
+        for i in range(0, len(sentences), BATCH_SIZE):
+            batch = sentences[i : i + BATCH_SIZE]
 
-        labels = [r["label"] for r in results]
-        scores = [round(r["score"], 6) for r in results]
-        output_q.put((chunk_id, labels, scores))
+            # Batch-tokenise in one call — far faster than the pipeline's per-sentence loop
+            inputs = tokenizer(
+                batch,
+                max_length=MAX_LENGTH,
+                truncation=True,
+                padding=True,        # pad to longest in this batch, not MAX_LENGTH
+                return_tensors="pt",
+            ).to(device)
+
+            with torch.no_grad():
+                logits = model(**inputs).logits
+
+            probs     = torch.softmax(logits, dim=-1)
+            predicted = probs.argmax(dim=-1)
+
+            for j in range(len(batch)):
+                idx = predicted[j].item()
+                all_labels.append(id2label[idx])
+                all_scores.append(round(probs[j, idx].item(), 6))
+
+        output_q.put((chunk_id, all_labels, all_scores))
 
 
 # ---------------------------------------------------------------------------
