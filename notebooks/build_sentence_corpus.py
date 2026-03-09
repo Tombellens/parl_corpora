@@ -49,6 +49,18 @@ PARLSPEECH_DATASETS = {
     "TweedeKamer":      "NLD",
     "Corp_Riksdagen_V2": "SWE",
 }
+
+# For ParlSpeech datasets that overlap with ParlaMint, only include rows
+# strictly BEFORE this year (ParlaMint is preferred for the overlapping period).
+# None = no ParlaMint equivalent for this country, include all years.
+PARLSPEECH_PARLAMINT_CUTOFFS = {
+    "Bundestag":         2021,   # ParlaMint-DE covers 2021–2022
+    "Congreso":          2015,   # ParlaMint-ES covers 2015+
+    "Folketing":         2014,   # ParlaMint-DK covers 2014+
+    "PSP":               2014,   # ParlaMint-CZ covers 2014+
+    "TweedeKamer":       2014,   # ParlaMint-NL covers 2014+
+    "Corp_Riksdagen_V2": None,   # No ParlaMint-SE in dataset — include all
+}
 # ---------------------------------------------------------------------------
 
 TEI_NS = {"tei": "http://www.tei-c.org/ns/1.0"}
@@ -135,9 +147,10 @@ def iter_parlamint_rows(parlamint_dir: str):
         ana_dir = tei_subdirs[0]
 
         # Collect XML files (flat or in year subdirs)
-        xml_files = glob(os.path.join(ana_dir, "**", "*.xml"), recursive=True)
+        xml_files = sorted(glob(os.path.join(ana_dir, "**", "*.xml"), recursive=True))
 
-        for xml_file in xml_files:
+        country_sentences = 0
+        for xml_file in tqdm(xml_files, desc=f"  {country_code}", leave=False, unit="file"):
             filename = os.path.basename(xml_file)
             try:
                 tree = ET.parse(xml_file)
@@ -153,6 +166,7 @@ def iter_parlamint_rows(parlamint_dir: str):
                         continue
 
                     sentences = split_sentences(text)
+                    country_sentences += len(sentences)
                     for idx, sentence in enumerate(sentences):
                         yield {
                             "sentence": sentence,
@@ -166,8 +180,10 @@ def iter_parlamint_rows(parlamint_dir: str):
                             "source_dataset_type": "parlamint",
                         }
             except Exception as e:
-                print(f"  ⚠️  Error parsing {xml_file}: {e}")
+                tqdm.write(f"  ⚠️  Error parsing {xml_file}: {e}")
                 continue
+
+        tqdm.write(f"  ✓ {dataset_name}: {country_sentences:,} sentences from {len(xml_files):,} files")
 
 
 # ---------------------------------------------------------------------------
@@ -185,12 +201,21 @@ def iter_parlspeech_rows(translated_dir: str):
             print(f"  ⚠️  Not found, skipping: {csv_path}")
             continue
 
-        print(f"  Processing ParlSpeech: {dataset_name}")
+        cutoff_year = PARLSPEECH_PARLAMINT_CUTOFFS.get(dataset_name)
+
+        print(f"  Processing ParlSpeech: {dataset_name}"
+              + (f" (rows before {cutoff_year} only — rest covered by ParlaMint)" if cutoff_year else ""))
         df = pd.read_csv(csv_path, low_memory=False)
 
         if "en_translation" not in df.columns:
             print(f"  ⚠️  No en_translation column in {csv_path}, skipping.")
             continue
+
+        if cutoff_year is not None:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            before = len(df)
+            df = df[df["date"].dt.year < cutoff_year]
+            print(f"    Kept {len(df):,} / {before:,} rows (year < {cutoff_year})")
 
         for row_idx, row in tqdm(df.iterrows(), total=len(df), desc=dataset_name, leave=False):
             text = row.get("en_translation")
@@ -293,13 +318,24 @@ def main():
     print(f"Started: {start.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*70}\n")
 
+    last_report = start
+    report_interval = 30  # seconds between progress lines
+
     with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
         writer.writeheader()
 
         def flush(buf):
+            nonlocal last_report
             write_rows(writer, buf)
             f.flush()
+            now = datetime.now()
+            if (now - last_report).total_seconds() >= report_interval:
+                elapsed = (now - start).total_seconds()
+                rate = total_sentences / elapsed if elapsed > 0 else 0
+                print(f"  [{now.strftime('%H:%M:%S')}] {total_sentences:,} sentences written"
+                      f"  ({rate:,.0f} sent/s,  {elapsed/60:.1f} min elapsed)")
+                last_report = now
             return []
 
         # --- ParlaMint ---
