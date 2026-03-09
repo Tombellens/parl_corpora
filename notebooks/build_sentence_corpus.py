@@ -161,7 +161,8 @@ def iter_parlamint_rows(parlamint_dir: str):
                 for u in utterances:
                     uid = u.attrib.get("{http://www.w3.org/XML/1998/namespace}id", "")
                     speaker = u.attrib.get("who", "").lstrip("#")
-                    text = " ".join(u.itertext()).strip()
+                    text = " ".join(u.itertext())
+                    text = " ".join(text.split())  # collapse all whitespace incl. newlines
                     if not text:
                         continue
 

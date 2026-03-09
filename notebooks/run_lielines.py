@@ -243,7 +243,8 @@ def main():
         if chunk_id < resume_from:
             continue
 
-        sentences = df_chunk["sentence"].fillna("").astype(str).tolist()
+        # Collapse embedded newlines/whitespace from XML extraction artefacts
+        sentences = df_chunk["sentence"].fillna("").astype(str).str.split().str.join(" ").tolist()
 
         # Store df before dispatching so we can pair it with results later
         pending[chunk_id] = [df_chunk, None, None]
