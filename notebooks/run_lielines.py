@@ -59,7 +59,7 @@ def gpu_worker(rank: int, num_gpus: int, input_q: mp.Queue, output_q: mp.Queue, 
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForSequenceClassification.from_pretrained(
-        model_name, torch_dtype=torch.float16
+        model_name, dtype=torch.float16
     ).to(device)
     model.eval()
 
@@ -122,9 +122,23 @@ def save_checkpoint(next_chunk_id: int):
 
 
 def count_rows(path: str) -> int:
-    """Fast line count (excludes header)."""
+    """
+    Estimate row count from file size + a small sample.
+    Proper line counting via binary scan overcounts when sentence text
+    contains embedded newlines inside quoted CSV fields.
+    """
+    file_size = os.path.getsize(path)
+    sample_size = 5_000
+    sample_bytes = 0
     with open(path, "rb") as f:
-        return sum(1 for _ in f) - 1
+        for i, line in enumerate(f):
+            sample_bytes += len(line)
+            if i >= sample_size:
+                break
+    if sample_bytes == 0:
+        return 0
+    avg_bytes_per_row = sample_bytes / sample_size
+    return max(1, int(file_size / avg_bytes_per_row) - 1)
 
 
 # ---------------------------------------------------------------------------
