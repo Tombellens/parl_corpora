@@ -35,8 +35,8 @@ from tqdm import tqdm
 # CONFIG — adjust paths as needed
 # ---------------------------------------------------------------------------
 PARLAMINT_DIR = "/home/tom/data/parlamint/raw/parlamint"
-PARLSPEECH_TRANSLATED_DIR = "/home/tom/projects/corpora"   # translated_*.csv files
-ITALY_TRANSLATED_FILE = "/home/tom/projects/corpora/translated_italy.csv"
+PARLSPEECH_DIR = "/home/tom/data/parlspeech"   # all ParlSpeech CSV files
+ITALY_TRANSLATED_FILE = "/home/tom/data/italy/translated_italy.csv"
 OUTPUT_FILE = "/home/tom/data/sentence_corpus.csv"
 CHUNK_SIZE = 10_000  # flush to disk every N sentences
 
@@ -44,14 +44,19 @@ CHUNK_SIZE = 10_000  # flush to disk every N sentences
 # Add ISO-2 codes here if you want to exclude any country
 PARLAMINT_SKIP = set()
 
-# ParlSpeech dataset name → ISO3 country code mapping (for source_dataset label)
+# ParlSpeech dataset name → (ISO3 country code, text column to use)
+# Translated datasets use "en_translation"; already-English ones use "text".
+# File naming: translated datasets → translated_{name}.csv
+#              already-English     → {name}.csv
 PARLSPEECH_DATASETS = {
-    "Bundestag":        "DEU",
-    "Congreso":         "ESP",
-    "Folketing":        "DNK",
-    "PSP":              "CZE",
-    "TweedeKamer":      "NLD",
-    "Corp_Riksdagen_V2": "SWE",
+    "Bundestag":         ("DEU", "en_translation"),
+    "Congreso":          ("ESP", "en_translation"),
+    "Folketing":         ("DNK", "en_translation"),
+    "PSP":               ("CZE", "en_translation"),
+    "TweedeKamer":       ("NLD", "en_translation"),
+    "Corp_Riksdagen_V2": ("SWE", "en_translation"),
+    "Commons":           ("GBR", "text"),   # already English
+    "NZHoR":             ("NZL", "text"),   # already English
 }
 
 # For ParlSpeech datasets that overlap with ParlaMint, only include rows
@@ -64,6 +69,8 @@ PARLSPEECH_PARLAMINT_CUTOFFS = {
     "PSP":               2014,   # ParlaMint-CZ covers 2014+
     "TweedeKamer":       2014,   # ParlaMint-NL covers 2014+
     "Corp_Riksdagen_V2": None,   # No ParlaMint-SE in dataset — include all
+    "Commons":           2015,   # ParlaMint-GB covers 2015+
+    "NZHoR":             None,   # No ParlaMint-NZ — include all
 }
 
 # US datasets
@@ -212,28 +219,37 @@ def iter_parlamint_rows(parlamint_dir: str):
 
 
 # ---------------------------------------------------------------------------
-# ParlSpeech (translated CSVs)
+# ParlSpeech (translated + native-English CSVs)
 # ---------------------------------------------------------------------------
 
-def iter_parlspeech_rows(translated_dir: str):
+def iter_parlspeech_rows(parlspeech_dir: str):
     """
-    Yield sentence-level dicts for all ParlSpeech translated CSV files.
-    Reads from translated_<DatasetName>.csv files.
+    Yield sentence-level dicts for all ParlSpeech CSV files.
+
+    Handles two file/column conventions:
+      - Translated corpora  : translated_{name}.csv  →  en_translation column
+      - Native-English corpora (Commons, NZHoR) : {name}.csv  →  text column
     """
-    for dataset_name, iso3 in PARLSPEECH_DATASETS.items():
-        csv_path = os.path.join(translated_dir, f"translated_{dataset_name}.csv")
+    for dataset_name, (iso3, text_col) in PARLSPEECH_DATASETS.items():
+        # Resolve file path based on whether the corpus was translated
+        if text_col == "en_translation":
+            csv_path = os.path.join(parlspeech_dir, f"translated_{dataset_name}.csv")
+        else:
+            csv_path = os.path.join(parlspeech_dir, f"{dataset_name}.csv")
+
         if not os.path.exists(csv_path):
             print(f"  ⚠️  Not found, skipping: {csv_path}")
             continue
 
         cutoff_year = PARLSPEECH_PARLAMINT_CUTOFFS.get(dataset_name)
 
-        print(f"  Processing ParlSpeech: {dataset_name}"
+        print(f"  Processing ParlSpeech: {dataset_name} [{text_col}]"
               + (f" (rows before {cutoff_year} only — rest covered by ParlaMint)" if cutoff_year else ""))
         df = pd.read_csv(csv_path, low_memory=False)
 
-        if "en_translation" not in df.columns:
-            print(f"  ⚠️  No en_translation column in {csv_path}, skipping.")
+        if text_col not in df.columns:
+            print(f"  ⚠️  Column '{text_col}' not found in {csv_path} "
+                  f"(available: {list(df.columns)}), skipping.")
             continue
 
         if cutoff_year is not None:
@@ -242,8 +258,9 @@ def iter_parlspeech_rows(translated_dir: str):
             df = df[df["date"].dt.year < cutoff_year]
             print(f"    Kept {len(df):,} / {before:,} rows (year < {cutoff_year})")
 
+        filename = os.path.basename(csv_path)
         for row_idx, row in tqdm(df.iterrows(), total=len(df), desc=dataset_name, leave=False):
-            text = row.get("en_translation")
+            text = row.get(text_col)
             if pd.isna(text) or not str(text).strip():
                 continue
 
@@ -259,7 +276,7 @@ def iter_parlspeech_rows(translated_dir: str):
                     "date": date,
                     "speaker": speaker,
                     "country": iso3,
-                    "source_file": f"translated_{dataset_name}.csv",
+                    "source_file": filename,
                     "source_speech_id": speech_id,
                     "source_dataset": dataset_name,
                     "source_dataset_type": "parlspeech",
@@ -270,9 +287,13 @@ def iter_parlspeech_rows(translated_dir: str):
 # Italian dataset
 # ---------------------------------------------------------------------------
 
+ITALY_START_YEAR = 1990
+
+
 def iter_italy_rows(italy_file: str):
     """
     Yield sentence-level dicts for the Italian translated CSV.
+    Only includes speeches from ITALY_START_YEAR onwards.
     """
     if not os.path.exists(italy_file):
         print(f"  ⚠️  Italian file not found: {italy_file}, skipping.")
@@ -284,6 +305,11 @@ def iter_italy_rows(italy_file: str):
     if "en_translation" not in df.columns:
         print(f"  ⚠️  No en_translation column in {italy_file}, skipping.")
         return
+
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    before = len(df)
+    df = df[df["date"].dt.year >= ITALY_START_YEAR]
+    print(f"    Kept {len(df):,} / {before:,} rows (year >= {ITALY_START_YEAR})")
 
     filename = os.path.basename(italy_file)
 
@@ -783,7 +809,7 @@ def main():
 
         # --- ParlSpeech ---
         print("Processing ParlSpeech...")
-        for row in iter_parlspeech_rows(PARLSPEECH_TRANSLATED_DIR):
+        for row in iter_parlspeech_rows(PARLSPEECH_DIR):
             buffer.append(row)
             total_sentences += 1
             if len(buffer) >= CHUNK_SIZE:
@@ -792,59 +818,54 @@ def main():
         print(f"  ParlSpeech done. Running total: {total_sentences:,} sentences\n")
 
         # --- Italy ---
-        # TODO: enable once translation is complete
-        # print("Processing Italian dataset...")
-        # for row in iter_italy_rows(ITALY_TRANSLATED_FILE):
-        #     buffer.append(row)
-        #     total_sentences += 1
-        #     if len(buffer) >= CHUNK_SIZE:
-        #         buffer = flush(buffer)
-        # buffer = flush(buffer)
-        # print(f"  Italy done. Running total: {total_sentences:,} sentences\n")
+        print("Processing Italian dataset...")
+        for row in iter_italy_rows(ITALY_TRANSLATED_FILE):
+            buffer.append(row)
+            total_sentences += 1
+            if len(buffer) >= CHUNK_SIZE:
+                buffer = flush(buffer)
+        buffer = flush(buffer)
+        print(f"  Italy done. Running total: {total_sentences:,} sentences\n")
 
         # --- US: Gentzkow et al. hein-daily (pre-2016) ---
-        # TODO: enable once US datasets are ready to include
-        # print("Processing Gentzkow et al. (US, pre-2016)...")
-        # for row in iter_gentzkow_rows(GENTZKOW_DIR):
-        #     buffer.append(row)
-        #     total_sentences += 1
-        #     if len(buffer) >= CHUNK_SIZE:
-        #         buffer = flush(buffer)
-        # buffer = flush(buffer)
-        # print(f"  Gentzkow done. Running total: {total_sentences:,} sentences\n")
+        print("Processing Gentzkow et al. (US, pre-2016)...")
+        for row in iter_gentzkow_rows(GENTZKOW_DIR):
+            buffer.append(row)
+            total_sentences += 1
+            if len(buffer) >= CHUNK_SIZE:
+                buffer = flush(buffer)
+        buffer = flush(buffer)
+        print(f"  Gentzkow done. Running total: {total_sentences:,} sentences\n")
 
         # --- US: Congressional Record (2016+) ---
-        # TODO: enable once US datasets are ready to include
-        # print("Processing Congressional Record (US, 2016+)...")
-        # for row in iter_congressional_record_rows(CONGRESSIONAL_RECORD_DIR):
-        #     buffer.append(row)
-        #     total_sentences += 1
-        #     if len(buffer) >= CHUNK_SIZE:
-        #         buffer = flush(buffer)
-        # buffer = flush(buffer)
-        # print(f"  Congressional Record done. Running total: {total_sentences:,} sentences\n")
+        print("Processing Congressional Record (US, 2016+)...")
+        for row in iter_congressional_record_rows(CONGRESSIONAL_RECORD_DIR):
+            buffer.append(row)
+            total_sentences += 1
+            if len(buffer) >= CHUNK_SIZE:
+                buffer = flush(buffer)
+        buffer = flush(buffer)
+        print(f"  Congressional Record done. Running total: {total_sentences:,} sentences\n")
 
         # --- Australia: Katz et al. Hansard (1998–2022) ---
-        # TODO: enable when ready
-        # print("Processing Australian Hansard (1998–2022)...")
-        # for row in iter_australia_rows(AUSTRALIA_HANSARD_FILE):
-        #     buffer.append(row)
-        #     total_sentences += 1
-        #     if len(buffer) >= CHUNK_SIZE:
-        #         buffer = flush(buffer)
-        # buffer = flush(buffer)
-        # print(f"  Australian Hansard done. Running total: {total_sentences:,} sentences\n")
+        print("Processing Australian Hansard (1998–2022)...")
+        for row in iter_australia_rows(AUSTRALIA_HANSARD_FILE):
+            buffer.append(row)
+            total_sentences += 1
+            if len(buffer) >= CHUNK_SIZE:
+                buffer = flush(buffer)
+        buffer = flush(buffer)
+        print(f"  Australian Hansard done. Running total: {total_sentences:,} sentences\n")
 
         # --- Canada: LiPaD / basehansard (1990+) ---
-        # TODO: enable once PostgreSQL user is configured and psycopg2 is installed
-        # print("Processing Canadian Hansard (LiPaD, 1990+)...")
-        # for row in iter_hansard_rows():
-        #     buffer.append(row)
-        #     total_sentences += 1
-        #     if len(buffer) >= CHUNK_SIZE:
-        #         buffer = flush(buffer)
-        # buffer = flush(buffer)
-        # print(f"  Canadian Hansard done. Running total: {total_sentences:,} sentences\n")
+        print("Processing Canadian Hansard (LiPaD, 1990+)...")
+        for row in iter_hansard_rows():
+            buffer.append(row)
+            total_sentences += 1
+            if len(buffer) >= CHUNK_SIZE:
+                buffer = flush(buffer)
+        buffer = flush(buffer)
+        print(f"  Canadian Hansard done. Running total: {total_sentences:,} sentences\n")
 
     elapsed = (datetime.now() - start).total_seconds()
     print(f"{'='*70}")
