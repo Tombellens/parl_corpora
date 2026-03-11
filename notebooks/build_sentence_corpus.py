@@ -781,7 +781,7 @@ def main():
     report_interval = 30  # seconds between progress lines
 
     with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
+        writer = csv.DictWriter(f, fieldnames=FIELDNAMES, quoting=csv.QUOTE_ALL)
         writer.writeheader()
 
         def flush(buf):
