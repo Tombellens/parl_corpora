@@ -38,7 +38,20 @@ PARLAMINT_DIR = "/home/tom/data/parlamint/raw/parlamint"
 PARLSPEECH_DIR = "/home/tom/data/parlspeech"   # all ParlSpeech CSV files
 ITALY_TRANSLATED_FILE = "/home/tom/data/italy/translated_italy.csv"
 OUTPUT_FILE = "/home/tom/data/sentence_corpus.csv"
-CHUNK_SIZE = 10_000  # flush to disk every N sentences
+CHUNK_SIZE = 10_000  # rows per flush
+
+# Per-dataset intermediate files — allows resuming after a crash.
+# Delete a file to force re-processing of that dataset only.
+DATA_DIR = "/home/tom/data"
+DATASET_FILES = {
+    "parlamint":            f"{DATA_DIR}/sentence_corpus_parlamint.csv",
+    "parlspeech":           f"{DATA_DIR}/sentence_corpus_parlspeech.csv",
+    "italy":                f"{DATA_DIR}/sentence_corpus_italy.csv",
+    "gentzkow":             f"{DATA_DIR}/sentence_corpus_gentzkow.csv",
+    "congressional-record": f"{DATA_DIR}/sentence_corpus_congressional_record.csv",
+    "australian-hansard":   f"{DATA_DIR}/sentence_corpus_australia.csv",
+    "hansard":              f"{DATA_DIR}/sentence_corpus_canada.csv",
+}
 
 # ParlaMint countries to skip (native English — include them but note the source)
 # Add ISO-2 codes here if you want to exclude any country
@@ -431,6 +444,8 @@ def iter_gentzkow_rows(hein_daily_dir: str):
                 if speech_id not in valid_ids:
                     continue
 
+                # Strip control characters (old CR data can contain them)
+                speech_text = ''.join(c for c in speech_text if c >= ' ' or c == '\t')
                 speech_text = ' '.join(speech_text.split())
                 if not speech_text:
                     continue
@@ -746,7 +761,7 @@ def iter_hansard_rows(
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Main helpers
 # ---------------------------------------------------------------------------
 
 FIELDNAMES = [
@@ -762,116 +777,137 @@ FIELDNAMES = [
 ]
 
 
+def write_dataset(label: str, iterator, output_path: str) -> int:
+    """
+    Write all rows from iterator to output_path as a standalone CSV.
+
+    - Skips (returns 0) if output_path already exists.
+    - Writes to a .tmp file first; renames to final path on success.
+    - Cleans up the .tmp file if an exception is raised.
+    - Returns the number of sentences written (or 0 if skipped).
+    """
+    if os.path.exists(output_path):
+        print(f"  ✓ {label}: already done — {output_path}\n"
+              f"    Delete the file to re-process this dataset.")
+        return 0
+
+    tmp_path = output_path + ".tmp"
+    total = 0
+    last_report = datetime.now()
+    report_interval = 30
+
+    print(f"\nProcessing {label}...")
+    try:
+        with open(tmp_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=FIELDNAMES, quoting=csv.QUOTE_ALL)
+            writer.writeheader()
+            buffer = []
+            for row in iterator:
+                buffer.append(row)
+                total += 1
+                if len(buffer) >= CHUNK_SIZE:
+                    for r in buffer:
+                        writer.writerow(r)
+                    f.flush()
+                    buffer = []
+                    now = datetime.now()
+                    if (now - last_report).total_seconds() >= report_interval:
+                        print(f"  [{now.strftime('%H:%M:%S')}] {label}: {total:,} sentences so far")
+                        last_report = now
+            for r in buffer:
+                writer.writerow(r)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+
+    os.rename(tmp_path, output_path)
+    print(f"  ✓ {label}: {total:,} sentences → {output_path}\n")
+    return total
+
+
+def merge_dataset_files(dataset_files: dict, output_file: str):
+    """
+    Concatenate all per-dataset CSVs (that exist) into one final CSV.
+    Reads each file line-by-line to avoid loading large files into memory.
+    """
+    existing = [(name, path) for name, path in dataset_files.items()
+                if os.path.exists(path)]
+    if not existing:
+        print("⚠️  No per-dataset files found to merge.")
+        return
+
+    print(f"\n{'='*70}")
+    print(f"Merging {len(existing)} dataset file(s) into {output_file} ...")
+
+    total = 0
+    with open(output_file, "w", newline="", encoding="utf-8") as fout:
+        writer = csv.writer(fout, quoting=csv.QUOTE_ALL)
+        writer.writerow(FIELDNAMES)
+
+        for name, path in existing:
+            count = 0
+            with open(path, "r", newline="", encoding="utf-8") as fin:
+                reader = csv.reader(fin, quoting=csv.QUOTE_ALL)
+                next(reader)  # skip header
+                for row in reader:
+                    writer.writerow(row)
+                    count += 1
+            total += count
+            print(f"  {name:<25} {count:>15,} sentences")
+
+    print(f"{'='*70}")
+    print(f"Total: {total:,} sentences written to {output_file}\n")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main():
     ensure_nltk()
-
-    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
-
-    total_sentences = 0
-    buffer = []
+    os.makedirs(DATA_DIR, exist_ok=True)
 
     start = datetime.now()
     print(f"\n{'='*70}")
-    print(f"Building sentence corpus")
-    print(f"Output: {OUTPUT_FILE}")
+    print(f"Building sentence corpus  (per-dataset files in {DATA_DIR})")
+    print(f"Final output: {OUTPUT_FILE}")
     print(f"Started: {start.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"{'='*70}\n")
+    print(f"Delete a per-dataset file to force re-processing of that dataset only.")
+    print(f"{'='*70}")
 
-    last_report = start
-    report_interval = 30  # seconds between progress lines
+    write_dataset("ParlaMint",
+                  iter_parlamint_rows(PARLAMINT_DIR),
+                  DATASET_FILES["parlamint"])
 
-    with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDNAMES, quoting=csv.QUOTE_ALL)
-        writer.writeheader()
+    write_dataset("ParlSpeech",
+                  iter_parlspeech_rows(PARLSPEECH_DIR),
+                  DATASET_FILES["parlspeech"])
 
-        def flush(buf):
-            nonlocal last_report
-            write_rows(writer, buf)
-            f.flush()
-            now = datetime.now()
-            if (now - last_report).total_seconds() >= report_interval:
-                elapsed = (now - start).total_seconds()
-                rate = total_sentences / elapsed if elapsed > 0 else 0
-                print(f"  [{now.strftime('%H:%M:%S')}] {total_sentences:,} sentences written"
-                      f"  ({rate:,.0f} sent/s,  {elapsed/60:.1f} min elapsed)")
-                last_report = now
-            return []
+    write_dataset("Italy",
+                  iter_italy_rows(ITALY_TRANSLATED_FILE),
+                  DATASET_FILES["italy"])
 
-        # --- ParlaMint ---
-        print("Processing ParlaMint...")
-        for row in iter_parlamint_rows(PARLAMINT_DIR):
-            buffer.append(row)
-            total_sentences += 1
-            if len(buffer) >= CHUNK_SIZE:
-                buffer = flush(buffer)
-        buffer = flush(buffer)
-        print(f"  ParlaMint done. Running total: {total_sentences:,} sentences\n")
+    write_dataset("Gentzkow et al. (US pre-2016)",
+                  iter_gentzkow_rows(GENTZKOW_DIR),
+                  DATASET_FILES["gentzkow"])
 
-        # --- ParlSpeech ---
-        print("Processing ParlSpeech...")
-        for row in iter_parlspeech_rows(PARLSPEECH_DIR):
-            buffer.append(row)
-            total_sentences += 1
-            if len(buffer) >= CHUNK_SIZE:
-                buffer = flush(buffer)
-        buffer = flush(buffer)
-        print(f"  ParlSpeech done. Running total: {total_sentences:,} sentences\n")
+    write_dataset("Congressional Record (US 2016+)",
+                  iter_congressional_record_rows(CONGRESSIONAL_RECORD_DIR),
+                  DATASET_FILES["congressional-record"])
 
-        # --- Italy ---
-        print("Processing Italian dataset...")
-        for row in iter_italy_rows(ITALY_TRANSLATED_FILE):
-            buffer.append(row)
-            total_sentences += 1
-            if len(buffer) >= CHUNK_SIZE:
-                buffer = flush(buffer)
-        buffer = flush(buffer)
-        print(f"  Italy done. Running total: {total_sentences:,} sentences\n")
+    write_dataset("Australian Hansard",
+                  iter_australia_rows(AUSTRALIA_HANSARD_FILE),
+                  DATASET_FILES["australian-hansard"])
 
-        # --- US: Gentzkow et al. hein-daily (pre-2016) ---
-        print("Processing Gentzkow et al. (US, pre-2016)...")
-        for row in iter_gentzkow_rows(GENTZKOW_DIR):
-            buffer.append(row)
-            total_sentences += 1
-            if len(buffer) >= CHUNK_SIZE:
-                buffer = flush(buffer)
-        buffer = flush(buffer)
-        print(f"  Gentzkow done. Running total: {total_sentences:,} sentences\n")
+    write_dataset("Canadian Hansard (LiPaD)",
+                  iter_hansard_rows(),
+                  DATASET_FILES["hansard"])
 
-        # --- US: Congressional Record (2016+) ---
-        print("Processing Congressional Record (US, 2016+)...")
-        for row in iter_congressional_record_rows(CONGRESSIONAL_RECORD_DIR):
-            buffer.append(row)
-            total_sentences += 1
-            if len(buffer) >= CHUNK_SIZE:
-                buffer = flush(buffer)
-        buffer = flush(buffer)
-        print(f"  Congressional Record done. Running total: {total_sentences:,} sentences\n")
-
-        # --- Australia: Katz et al. Hansard (1998–2022) ---
-        print("Processing Australian Hansard (1998–2022)...")
-        for row in iter_australia_rows(AUSTRALIA_HANSARD_FILE):
-            buffer.append(row)
-            total_sentences += 1
-            if len(buffer) >= CHUNK_SIZE:
-                buffer = flush(buffer)
-        buffer = flush(buffer)
-        print(f"  Australian Hansard done. Running total: {total_sentences:,} sentences\n")
-
-        # --- Canada: LiPaD / basehansard (1990+) ---
-        print("Processing Canadian Hansard (LiPaD, 1990+)...")
-        for row in iter_hansard_rows():
-            buffer.append(row)
-            total_sentences += 1
-            if len(buffer) >= CHUNK_SIZE:
-                buffer = flush(buffer)
-        buffer = flush(buffer)
-        print(f"  Canadian Hansard done. Running total: {total_sentences:,} sentences\n")
+    merge_dataset_files(DATASET_FILES, OUTPUT_FILE)
 
     elapsed = (datetime.now() - start).total_seconds()
-    print(f"{'='*70}")
-    print(f"Done. {total_sentences:,} sentences written to {OUTPUT_FILE}")
-    print(f"Elapsed: {elapsed/60:.1f} min")
-    print(f"{'='*70}\n")
+    print(f"All done. Elapsed: {elapsed/60:.1f} min\n")
 
 
 if __name__ == "__main__":
