@@ -9,7 +9,7 @@ Output columns:
     sentence_idx       - position within the original speech (0-based)
     date               - speech date
     speaker            - speaker name or ID
-    country            - ISO 2-letter country code (ParlaMint) or ISO3 (ParlSpeech/Italy)
+    country            - ISO 2-letter country code (ISO 3166-1 alpha-2) for all datasets
     source_file        - filename the speech came from
     source_speech_id   - identifier for the speech within the source file
                          (utterance xml:id for ParlaMint, speechnumber/row index for ParlSpeech)
@@ -57,19 +57,20 @@ DATASET_FILES = {
 # Add ISO-2 codes here if you want to exclude any country
 PARLAMINT_SKIP = set()
 
-# ParlSpeech dataset name → (ISO3 country code, text column to use)
+# ParlSpeech dataset name → (ISO2 country code, text column to use)
+# All country codes use ISO 3166-1 alpha-2 to match ParlaMint.
 # Translated datasets use "en_translation"; already-English ones use "text".
 # File naming: translated datasets → translated_{name}.csv
 #              already-English     → {name}.csv
 PARLSPEECH_DATASETS = {
-    "Bundestag":         ("DEU", "en_translation"),
-    "Congreso":          ("ESP", "en_translation"),
-    "Folketing":         ("DNK", "en_translation"),
-    "PSP":               ("CZE", "en_translation"),
-    "TweedeKamer":       ("NLD", "en_translation"),
-    "Corp_Riksdagen_V2": ("SWE", "en_translation"),
-    "Commons":           ("GBR", "text"),   # already English
-    "NZHoR":             ("NZL", "text"),   # already English
+    "Bundestag":         ("DE", "en_translation"),
+    "Congreso":          ("ES", "en_translation"),
+    "Folketing":         ("DK", "en_translation"),
+    "PSP":               ("CZ", "en_translation"),
+    "TweedeKamer":       ("NL", "en_translation"),
+    "Corp_Riksdagen_V2": ("SE", "en_translation"),
+    "Commons":           ("GB", "text"),   # already English
+    "NZHoR":             ("NZ", "text"),   # already English
 }
 
 # For ParlSpeech datasets that overlap with ParlaMint, only include rows
@@ -301,12 +302,14 @@ def iter_parlspeech_rows(parlspeech_dir: str):
 # ---------------------------------------------------------------------------
 
 ITALY_START_YEAR = 1990
+ITALY_PARLAMINT_CUTOFF_YEAR = 2013   # ParlaMint-IT covers 2013+; avoid double-counting
 
 
 def iter_italy_rows(italy_file: str):
     """
     Yield sentence-level dicts for the Italian translated CSV.
-    Only includes speeches from ITALY_START_YEAR onwards.
+    Only includes speeches from ITALY_START_YEAR up to (not including)
+    ITALY_PARLAMINT_CUTOFF_YEAR, since ParlaMint-IT covers the rest.
     """
     if not os.path.exists(italy_file):
         print(f"  ⚠️  Italian file not found: {italy_file}, skipping.")
@@ -321,8 +324,12 @@ def iter_italy_rows(italy_file: str):
 
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     before = len(df)
-    df = df[df["date"].dt.year >= ITALY_START_YEAR]
-    print(f"    Kept {len(df):,} / {before:,} rows (year >= {ITALY_START_YEAR})")
+    df = df[
+        (df["date"].dt.year >= ITALY_START_YEAR) &
+        (df["date"].dt.year <  ITALY_PARLAMINT_CUTOFF_YEAR)
+    ]
+    print(f"    Kept {len(df):,} / {before:,} rows "
+          f"({ITALY_START_YEAR} <= year < {ITALY_PARLAMINT_CUTOFF_YEAR})")
 
     filename = os.path.basename(italy_file)
 
@@ -342,7 +349,7 @@ def iter_italy_rows(italy_file: str):
                 "sentence_idx": idx,
                 "date": date,
                 "speaker": speaker,
-                "country": "ITA",
+                "country": "IT",
                 "source_file": filename,
                 "source_speech_id": speech_id,
                 "source_dataset": "italy",
@@ -459,7 +466,7 @@ def iter_gentzkow_rows(hein_daily_dir: str):
                         'sentence_idx':      idx,
                         'date':              meta['date_str'],
                         'speaker':           meta['speaker_name'],
-                        'country':           'USA',
+                        'country':           'US',
                         'source_file':       filename,
                         'source_speech_id':  speech_id,
                         'source_dataset':    'hein-daily',
@@ -561,7 +568,7 @@ def iter_congressional_record_rows(cr_output_dir: str):
                             'sentence_idx':      idx,
                             'date':              date_str,
                             'speaker':           speaker,
-                            'country':           'USA',
+                            'country':           'US',
                             'source_file':       filename,
                             'source_speech_id':  speech_id,
                             'source_dataset':    'congressional-record',
@@ -642,7 +649,7 @@ def iter_australia_rows(hansard_file: str):
                     "sentence_idx":       idx,
                     "date":               date_str,
                     "speaker":            speaker,
-                    "country":            "AUS",
+                    "country":            "AU",
                     "source_file":        filename,
                     "source_speech_id":   speech_id,
                     "source_dataset":     "australian-hansard",
@@ -746,7 +753,7 @@ def iter_hansard_rows(
                         "sentence_idx":       idx,
                         "date":               date_str,
                         "speaker":            speaker,
-                        "country":            "CAN",
+                        "country":            "CA",
                         "source_file":        "dilipadsite_basehansard",
                         "source_speech_id":   speech_id,
                         "source_dataset":     "lipad",
