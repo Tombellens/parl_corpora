@@ -92,8 +92,8 @@ GENTZKOW_DIR = "/home/tom/data/us/gentzkow_et_al/hein-daily"
 CONGRESSIONAL_RECORD_DIR = "/home/tom/data/us/congressional-record/output"
 # Gentzkow hein-daily covers up to 114th Congress (ends Jan 2017).
 # Congressional Record JSON data starts from 2016.
-# Use Gentzkow for < cutoff, Congressional Record for >= cutoff.
-US_CR_CUTOFF_YEAR = 2016
+# Use Gentzkow for start_year <= year < cutoff, Congressional Record for >= cutoff.
+US_START_YEAR = 1994  # GovInfo Congressional Record data starts from 1994
 
 # Australian Hansard (Katz et al. 2023, Zenodo)
 AUSTRALIA_HANSARD_FILE = "/home/tom/data/australia/hansard_corpus_1998_to_2022.csv"
@@ -119,13 +119,18 @@ def ensure_nltk():
             nltk.download(resource.split("/")[-1])
 
 
+MIN_SENTENCE_WORDS = 3  # drop 1-2 word NLTK artifacts; keep short accusations like "That's a lie!"
+
+
 def split_sentences(text: str) -> list[str]:
-    """Split English text into sentences with NLTK."""
+    """Split English text into sentences with NLTK, dropping short fragments."""
     try:
         sentences = nltk.sent_tokenize(text)
-        return [s.strip() for s in sentences if s.strip()]
+        return [s.strip() for s in sentences
+                if s.strip() and len(s.split()) >= MIN_SENTENCE_WORDS]
     except Exception:
-        return [text.strip()] if text.strip() else []
+        s = text.strip()
+        return [s] if s and len(s.split()) >= MIN_SENTENCE_WORDS else []
 
 
 def write_rows(writer, rows: list[dict]):
@@ -404,15 +409,26 @@ def iter_gentzkow_rows(hein_daily_dir: str):
                        f"(found: {list(descr_df.columns)}), skipping.")
             continue
 
-        # Parse dates and apply cutoff
+        # Parse dates and apply start/cutoff year filters
         descr_df['date_parsed'] = pd.to_datetime(
             descr_df['date'], format='%Y%m%d', errors='coerce')
         before = len(descr_df)
-        descr_df = descr_df[descr_df['date_parsed'].dt.year < US_CR_CUTOFF_YEAR]
+        descr_df = descr_df[
+            (descr_df['date_parsed'].dt.year >= US_START_YEAR) &
+            (descr_df['date_parsed'].dt.year <  US_CR_CUTOFF_YEAR)
+        ]
         if descr_df.empty:
             tqdm.write(f"  Skipping congress {congress}: "
-                       f"all {before:,} speeches at or after cutoff year {US_CR_CUTOFF_YEAR}.")
+                       f"no speeches in [{US_START_YEAR}, {US_CR_CUTOFF_YEAR}) "
+                       f"(had {before:,} total).")
             continue
+
+        # Exclude Extensions of Remarks — written inserts, not floor speeches
+        if 'chamber' in descr_df.columns:
+            before_chamber = len(descr_df)
+            descr_df = descr_df[descr_df['chamber'].isin(['H', 'S'])]
+            tqdm.write(f"  Congress {congress}: excluded "
+                       f"{before_chamber - len(descr_df):,} Extensions of Remarks")
 
         # Format date as YYYY-MM-DD
         descr_df['date_str'] = (
@@ -474,7 +490,7 @@ def iter_gentzkow_rows(hein_daily_dir: str):
                     }
 
         tqdm.write(f"  ✓ Congress {congress}: {congress_sentences:,} sentences "
-                   f"(from {len(valid_ids):,} / {before:,} speeches before {US_CR_CUTOFF_YEAR})")
+                   f"(from {len(valid_ids):,} / {before:,} speeches in [{US_START_YEAR}, {US_CR_CUTOFF_YEAR}))")
 
 
 # ---------------------------------------------------------------------------
@@ -495,7 +511,8 @@ def iter_congressional_record_rows(cr_output_dir: str):
         content[].speaker  — speaker name string (may be "None")
         content[].itemno   — position within file
 
-    Only years >= US_CR_CUTOFF_YEAR are included (Gentzkow covers the rest).
+    Only years >= US_START_YEAR are included. GovInfo data starts from 1994.
+    Extensions of Remarks (PgE files) are excluded — written inserts, not floor speeches.
     """
     if not os.path.isdir(cr_output_dir):
         print(f"  ⚠️  Congressional Record output dir not found: {cr_output_dir}")
@@ -503,11 +520,11 @@ def iter_congressional_record_rows(cr_output_dir: str):
 
     years = sorted([
         y for y in os.listdir(cr_output_dir)
-        if y.isdigit() and int(y) >= US_CR_CUTOFF_YEAR
+        if y.isdigit() and int(y) >= US_START_YEAR
         and os.path.isdir(os.path.join(cr_output_dir, y))
     ])
     if not years:
-        print(f"  ⚠️  No years >= {US_CR_CUTOFF_YEAR} found in {cr_output_dir}")
+        print(f"  ⚠️  No years >= {US_START_YEAR} found in {cr_output_dir}")
         return
 
     for year in tqdm(years, desc="Congressional Record years"):
@@ -525,6 +542,9 @@ def iter_congressional_record_rows(cr_output_dir: str):
 
             for json_file in sorted(glob(os.path.join(json_dir, '*.json'))):
                 filename = os.path.basename(json_file)
+                # Skip Extensions of Remarks pages — written inserts, not floor speeches
+                if 'PgE' in filename:
+                    continue
                 try:
                     with open(json_file, 'r', encoding='utf-8') as f:
                         data = json.load(f)
@@ -895,11 +915,10 @@ def main():
                   iter_italy_rows(ITALY_TRANSLATED_FILE),
                   DATASET_FILES["italy"])
 
-    write_dataset("Gentzkow et al. (US pre-2016)",
-                  iter_gentzkow_rows(GENTZKOW_DIR),
-                  DATASET_FILES["gentzkow"])
-
-    write_dataset("Congressional Record (US 2016+)",
+    # US data: single source (GovInfo Congressional Record, 1994–2024)
+    # hein-daily (Gentzkow et al.) dropped for methodological consistency —
+    # CR is now complete for all years via GovInfo downloads.
+    write_dataset("Congressional Record (US 1994–2024)",
                   iter_congressional_record_rows(CONGRESSIONAL_RECORD_DIR),
                   DATASET_FILES["congressional-record"])
 
