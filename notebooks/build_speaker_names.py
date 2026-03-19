@@ -38,11 +38,8 @@ CHUNK_SIZE  = 500_000
 def main():
     print(f"Reading corpus: {CORPUS_FILE}")
 
-    records = defaultdict(lambda: {
-        "min_date":    "9999",
-        "max_date":    "0000",
-        "n_sentences": 0,
-    })
+    GROUP_KEYS = ["speaker", "country", "source_dataset", "source_dataset_type"]
+    agg_chunks = []
 
     for i, chunk in enumerate(pd.read_csv(
         CORPUS_FILE,
@@ -50,38 +47,26 @@ def main():
         dtype=str,
         chunksize=CHUNK_SIZE,
     )):
-        if i % 10 == 0:
-            print(f"  chunk {i:>4}  ({i * CHUNK_SIZE:>12,.0f} rows processed)...")
+        print(f"  chunk {i:>4}  ({i * CHUNK_SIZE:>12,.0f} rows processed)...")
 
-        for _, row in chunk.iterrows():
-            key = (
-                str(row["speaker"]),
-                str(row["country"]),
-                str(row["source_dataset"]),
-                str(row["source_dataset_type"]),
-            )
-            d = str(row["date"]) if pd.notna(row["date"]) else ""
-            r = records[key]
-            r["n_sentences"] += 1
-            if d and d < r["min_date"]:
-                r["min_date"] = d
-            if d and d > r["max_date"]:
-                r["max_date"] = d
+        chunk["date"] = chunk["date"].fillna("")
+        agg = chunk.groupby(GROUP_KEYS, sort=False).agg(
+            min_date=("date", "min"),
+            max_date=("date", "max"),
+            n_sentences=("date", "count"),
+        ).reset_index()
+        agg_chunks.append(agg)
 
-    print(f"\nFound {len(records):,} unique speaker-dataset combinations.")
+    print(f"\nMerging {len(agg_chunks)} chunks...")
+    combined = pd.concat(agg_chunks, ignore_index=True)
+    df = combined.groupby(GROUP_KEYS, sort=False).agg(
+        min_date=("min_date", "min"),
+        max_date=("max_date", "max"),
+        n_sentences=("n_sentences", "sum"),
+    ).reset_index()
 
-    rows = [
-        {
-            "speaker":             k[0],
-            "country":             k[1],
-            "source_dataset":      k[2],
-            "source_dataset_type": k[3],
-            **v,
-        }
-        for k, v in records.items()
-    ]
-
-    df = pd.DataFrame(rows).sort_values(["country", "source_dataset", "speaker"])
+    print(f"Found {len(df):,} unique speaker-dataset combinations.")
+    df = df.sort_values(["country", "source_dataset", "speaker"])
     df.to_csv(OUTPUT_FILE, index=False)
     print(f"Saved to {OUTPUT_FILE}")
     print(df.groupby("source_dataset_type")["speaker"].count().to_string())
