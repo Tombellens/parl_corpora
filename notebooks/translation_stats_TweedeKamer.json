@@ -1,0 +1,10 @@
+{
+  "model": "OPUS-MT via EasyNMT (ParlaMint sentence-by-sentence methodology)",
+  "source_language": "nl",
+  "total_texts": 1143360,
+  "total_sentences_translated": 9220096,
+  "avg_sentences_per_text": 8.064035824237335,
+  "single_sentence_texts_pct": 0.0,
+  "translation_speed_texts_per_sec": 5.298303756238179,
+  "total_duration_minutes": 3596.62278282245
+}
