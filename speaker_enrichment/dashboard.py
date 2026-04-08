@@ -628,15 +628,17 @@ a{color:#58a6ff}
 
 <h2>URLs ({{ urls|length }})</h2>
 <table>
-<tr><th>Rank</th><th>URL</th><th>Lang</th><th>Fetch</th><th>Chars</th><th>Synth</th></tr>
+<tr><th>Rank</th><th>URL</th><th>Lang</th><th>HTTP</th><th>Fetch</th><th>Error</th><th>Chars</th><th>Synth</th></tr>
 {% for u in urls %}
 <tr>
   <td>{{ u.search_rank }}</td>
-  <td style="font-size:10px;max-width:360px;word-break:break-all">
-    <a href="{{ u.url }}" target="_blank">{{ u.url[:80] }}{% if u.url|length > 80 %}…{% endif %}</a>
+  <td style="font-size:10px;max-width:280px;word-break:break-all">
+    <a href="{{ u.url }}" target="_blank">{{ u.url[:70] }}{% if u.url|length > 70 %}…{% endif %}</a>
   </td>
   <td>{{ u.query_language }}</td>
+  <td class="mono">{{ u.fetch_http_status or '' }}</td>
   <td><span class="badge s-{{ u.fetch_status }}">{{ u.fetch_status }}</span></td>
+  <td style="color:#f85149;font-size:10px;max-width:200px">{{ u.fetch_error or '' }}</td>
   <td>{{ u.cleaned_text_len or '' }}</td>
   <td><span class="badge s-{{ u.synthesis_status }}">{{ u.synthesis_status }}</span></td>
 </tr>
