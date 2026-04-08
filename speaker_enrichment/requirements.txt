@@ -1,0 +1,8 @@
+flask
+trafilatura
+lxml
+beautifulsoup4
+requests
+openai
+pandas
+tqdm
