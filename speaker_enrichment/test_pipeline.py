@@ -487,7 +487,15 @@ def main():
            + (f", stage={args.stage}" if args.stage else "")
            + ")")
 
-    # Setup isolated test environment
+    # Setup isolated test environment — always start from a clean slate
+    if Path(_TEST_DB).exists():
+        Path(_TEST_DB).unlink()
+        info("Removed previous test DB.")
+    if Path(_TEST_HTML).exists():
+        shutil.rmtree(_TEST_HTML)
+    if Path(_TEST_CV).exists():
+        shutil.rmtree(_TEST_CV)
+
     _TEST_ROOT.mkdir(parents=True, exist_ok=True)
     Path(_TEST_HTML).mkdir(parents=True, exist_ok=True)
     Path(_TEST_CV).mkdir(parents=True, exist_ok=True)
