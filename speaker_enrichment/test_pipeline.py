@@ -243,7 +243,10 @@ def run_fetch(speakers, verbose: bool) -> None:
         for sp in speakers:
             sid  = sp["speaker_id"]
             name = sp["name_cleaned"] or ""
-            info(f"Fetching: {name}")
+            total_urls = conn.execute(
+                "SELECT COUNT(*) FROM speaker_urls WHERE speaker_id=?", (sid,)
+            ).fetchone()[0]
+            info(f"Fetching: {name}  ({total_urls} URLs in DB)")
             pending = conn.execute(
                 "SELECT * FROM speaker_urls WHERE speaker_id=? AND fetch_status='pending'",
                 (sid,),
@@ -288,7 +291,14 @@ def run_url_synth(speakers, verbose: bool) -> None:
     section("STAGE: url_synth  (per-URL LLM synthesis)")
     acquire_llm_lock("test_url_synth", config.MODEL_SYNTHESIZE_URL)
     try:
-        load_model(config.MODEL_SYNTHESIZE_URL)
+        try:
+            load_model(config.MODEL_SYNTHESIZE_URL)
+        except Exception as e:
+            warn(f"Could not load model '{config.MODEL_SYNTHESIZE_URL}': {e}")
+            warn("Check that LM Studio is running and the model ID in config.py is correct.")
+            warn("Skipping url_synth stage.")
+            release_llm_lock()
+            return
         with get_conn() as conn:
             for sp in speakers:
                 sid  = sp["speaker_id"]
@@ -313,7 +323,13 @@ def run_cv_synth(speakers, verbose: bool) -> None:
     section("STAGE: cv_synth  (merge snippets → CV)")
     acquire_llm_lock("test_cv_synth", config.MODEL_SYNTHESIZE_CV)
     try:
-        load_model(config.MODEL_SYNTHESIZE_CV)
+        try:
+            load_model(config.MODEL_SYNTHESIZE_CV)
+        except Exception as e:
+            warn(f"Could not load model '{config.MODEL_SYNTHESIZE_CV}': {e}")
+            warn("Skipping cv_synth stage.")
+            release_llm_lock()
+            return
         with get_conn() as conn:
             for sp in speakers:
                 sid  = sp["speaker_id"]
@@ -342,7 +358,13 @@ def run_cv_synth(speakers, verbose: bool) -> None:
 def _run_annotation(speakers, module, group: str, verbose: bool) -> None:
     acquire_llm_lock(f"test_annotate_{group}", getattr(config, f"MODEL_ANNOTATE_{group}"))
     try:
-        load_model(getattr(config, f"MODEL_ANNOTATE_{group}"))
+        try:
+            load_model(getattr(config, f"MODEL_ANNOTATE_{group}"))
+        except Exception as e:
+            warn(f"Could not load model for group {group}: {e}")
+            warn(f"Skipping annotate_{group} stage.")
+            release_llm_lock()
+            return
         with get_conn() as conn:
             for sp in speakers:
                 sid  = sp["speaker_id"]

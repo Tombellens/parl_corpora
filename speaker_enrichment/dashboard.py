@@ -562,7 +562,12 @@ function pollLog() {
         box.scrollTop = box.scrollHeight;
       }
       _logOffset = d.offset;
-      if (!d.running && d.text === '') stopPolling();
+      if (!d.running) {
+        stopPolling();
+        const rc = d.returncode != null ? d.returncode : '?';
+        document.getElementById('log-status').textContent =
+          rc === 0 ? 'finished OK' : 'finished (exit ' + rc + ')';
+      }
     })
     .catch(() => stopPolling());
 }
@@ -958,9 +963,10 @@ def api_log(name):
     text, new_offset = _pm.get_log(name, offset)
     info = _pm.status(name)
     return jsonify({
-        "text":    text,
-        "offset":  new_offset,
-        "running": info["running"] if info else False,
+        "text":       text,
+        "offset":     new_offset,
+        "running":    info["running"] if info else False,
+        "returncode": info["returncode"] if info else None,
     })
 
 
