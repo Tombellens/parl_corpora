@@ -518,10 +518,20 @@ hr{border:none;border-top:1px solid #30363d;margin:12px 0}
 {% endif %}
 
 <p style="margin-top:28px;color:#30363d;font-size:10px">
-  Auto-refresh every 30s &nbsp;·&nbsp; <a href="/" style="color:#30363d">refresh now</a>
+  Auto-refresh every 30s (paused while log is open) &nbsp;·&nbsp;
+  <a href="/" style="color:#30363d">refresh now</a>
   &nbsp;·&nbsp; <a href="/api/status" style="color:#30363d">JSON status</a>
 </p>
-<script>setTimeout(()=>location.reload(),30000);</script>
+<script>
+let _refreshTimer = setTimeout(()=>location.reload(), 30000);
+function _pauseRefresh() {
+  clearTimeout(_refreshTimer);
+  _refreshTimer = null;
+}
+function _resumeRefresh() {
+  if (!_refreshTimer) _refreshTimer = setTimeout(()=>location.reload(), 30000);
+}
+</script>
 
 <!-- ===================== LOG POLLING ===================== -->
 <script>
@@ -542,6 +552,7 @@ function startPolling(name) {
   _logOffset = 0;
   document.getElementById('log-out').textContent = '';
   document.getElementById('log-status').textContent = 'streaming ' + name + '…';
+  _pauseRefresh();
   _pollTimer = setInterval(pollLog, 1000);
   pollLog();
 }
@@ -549,6 +560,7 @@ function startPolling(name) {
 function stopPolling() {
   if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
   document.getElementById('log-status').textContent = '';
+  _resumeRefresh();
 }
 
 function pollLog() {

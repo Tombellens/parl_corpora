@@ -246,7 +246,13 @@ def run_fetch(speakers, verbose: bool) -> None:
             total_urls = conn.execute(
                 "SELECT COUNT(*) FROM speaker_urls WHERE speaker_id=?", (sid,)
             ).fetchone()[0]
-            info(f"Fetching: {name}  ({total_urls} URLs in DB)")
+            status_counts = conn.execute(
+                "SELECT fetch_status, COUNT(*) as n FROM speaker_urls "
+                "WHERE speaker_id=? GROUP BY fetch_status", (sid,)
+            ).fetchall()
+            status_summary = ", ".join(f"{r['fetch_status']}={r['n']}" for r in status_counts)
+            info(f"Fetching: {name}  ({total_urls} URLs in DB  statuses: {status_summary or 'none'})")
+            info(f"  speaker_id={repr(sid)}")
             pending = conn.execute(
                 "SELECT * FROM speaker_urls WHERE speaker_id=? AND fetch_status='pending'",
                 (sid,),
