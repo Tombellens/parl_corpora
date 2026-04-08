@@ -62,17 +62,27 @@ class ProcessManager:
         self.log_dir = log_dir
         log_dir.mkdir(parents=True, exist_ok=True)
 
-    def start(self, name: str, cmd: list[str], env: dict | None = None) -> dict:
-        """Launch a subprocess. Replaces any finished process with the same name."""
+    def start(self, name: str, cmd: list[str], env: dict | None = None,
+              force: bool = False) -> dict:
+        """Launch a subprocess. Replaces any finished process with the same name.
+        If force=True, kills any running process with that name first."""
         with self._lock:
             existing = self._procs.get(name)
             if existing and existing["proc"].poll() is None:
-                raise RuntimeError(f"Process '{name}' is already running (PID {existing['pid']})")
+                if force:
+                    existing["proc"].terminate()
+                    try:
+                        existing["proc"].wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        existing["proc"].kill()
+                else:
+                    raise RuntimeError(f"Process '{name}' is already running (PID {existing['pid']})")
 
             log_path = self.log_dir / f"{name}.log"
             log_fh   = open(log_path, "w", buffering=1)
 
-            full_env = {**os.environ, **(env or {})}
+            # PYTHONUNBUFFERED ensures output appears in the log immediately
+            full_env = {**os.environ, "PYTHONUNBUFFERED": "1", **(env or {})}
             proc = subprocess.Popen(
                 cmd,
                 cwd=str(HERE),
@@ -273,6 +283,12 @@ hr{border:none;border-top:1px solid #30363d;margin:12px 0}
   <form method="post" action="/process/kill" style="display:inline;margin:0">
     <input type="hidden" name="name" value="{{ proc.name }}">
     <button class="stage-btn btn-red" type="submit">kill</button>
+  </form>
+  {% else %}
+  <form method="post" action="/process/restart" style="display:inline;margin:0">
+    <input type="hidden" name="name" value="{{ proc.name }}">
+    <input type="hidden" name="force" value="1">
+    <button class="stage-btn btn-orange" type="submit">restart</button>
   </form>
   {% endif %}
 </div>
@@ -837,7 +853,9 @@ def test_launch():
         args = [a for a in args if a != "--keep"]   # remove keep if user didn't tick it
 
     try:
-        proc = _launch("test_pipeline", "test_pipeline.py", args)
+        proc = _pm.start("test_pipeline",
+                         [sys.executable, str(HERE / "test_pipeline.py")] + args,
+                         force=True)
         return _render(**_flash(
             f"Test pipeline launched (PID {proc['pid']})  "
             f"n={n}" + (f" country={country}" if country else "") +
@@ -859,6 +877,21 @@ def process_kill():
     if _pm.kill(name):
         return _render(**_flash(f"Process '{name}' killed."))
     return _render(**_flash(f"Process '{name}' not found.", ok=False))
+
+
+@app.route("/process/restart", methods=["POST"])
+def process_restart():
+    name = request.form.get("name", "")
+    info = _pm.status(name)
+    if not info:
+        return _render(**_flash(f"Process '{name}' not found.", ok=False))
+    try:
+        # Re-launch with the same command, force-killing if still alive
+        cmd = info["cmd"].split()
+        proc = _pm.start(name, cmd, force=True)
+        return _render(**_flash(f"Process '{name}' restarted (PID {proc['pid']})."))
+    except Exception as e:
+        return _render(**_flash(f"Restart error: {e}", ok=False))
 
 
 # ---------------------------------------------------------------------------
