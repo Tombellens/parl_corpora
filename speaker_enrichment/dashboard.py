@@ -278,7 +278,7 @@ hr{border:none;border-top:1px solid #30363d;margin:12px 0}
   <span class="mono">PID {{ proc.pid }}</span>
   <span class="mono">{{ proc.started_at }}</span>
   <span class="mono" style="flex:1;overflow:hidden;text-overflow:ellipsis">{{ proc.cmd[:80] }}</span>
-  <button class="stage-btn" onclick="showLog('{{ proc.name }}')">log</button>
+  <button type="button" class="stage-btn" onclick="showLog('{{ proc.name }}')">log</button>
   {% if proc.running %}
   <form method="post" action="/process/kill" style="display:inline;margin:0">
     <input type="hidden" name="name" value="{{ proc.name }}">
@@ -307,9 +307,9 @@ hr{border:none;border-top:1px solid #30363d;margin:12px 0}
       <option value="{{ proc.name }}">{{ proc.name }}</option>
       {% endfor %}
     </select>
-    <button onclick="startPolling(document.getElementById('log-select').value)">View</button>
-    <button onclick="stopPolling()">Stop</button>
-    <button onclick="document.getElementById('log-out').textContent=''">Clear</button>
+    <button type="button" onclick="startPolling(document.getElementById('log-select').value)">View</button>
+    <button type="button" onclick="stopPolling()">Stop</button>
+    <button type="button" onclick="document.getElementById('log-out').textContent=''">Clear</button>
     <span id="log-status" class="mono"></span>
   </div>
   <div class="terminal" id="log-out">Select a process above to view its output.</div>
