@@ -114,13 +114,13 @@ def main():
         return
 
     init_db()
-    acquire_llm_lock(f"annotate_{GROUP}", config.MODEL_ANNOTATE_D)
-    print(f"Loading model {config.MODEL_ANNOTATE_D}...")
-    load_model(config.MODEL_ANNOTATE_D)
-
     run_id = str(uuid.uuid4())
 
     try:
+        acquire_llm_lock(f"annotate_{GROUP}", config.MODEL_ANNOTATE_D)
+        print(f"Loading model {config.MODEL_ANNOTATE_D}...")
+        load_model(config.MODEL_ANNOTATE_D)
+
         with get_conn() as conn:
             conn.execute(
                 "INSERT INTO batch_runs (run_id, stage, batch_type, started_at) VALUES (?,?,?,?)",

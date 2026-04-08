@@ -125,13 +125,12 @@ def main():
         return
 
     init_db()
-    acquire_llm_lock("synthesize_cv", config.MODEL_SYNTHESIZE_CV)
-    print(f"Loading model {config.MODEL_SYNTHESIZE_CV}...")
-    load_model(config.MODEL_SYNTHESIZE_CV)
-
     run_id = str(uuid.uuid4())
 
     try:
+        acquire_llm_lock("synthesize_cv", config.MODEL_SYNTHESIZE_CV)
+        print(f"Loading model {config.MODEL_SYNTHESIZE_CV}...")
+        load_model(config.MODEL_SYNTHESIZE_CV)
         with get_conn() as conn:
             conn.execute(
                 "INSERT INTO batch_runs (run_id, stage, batch_type, started_at) VALUES (?,?,?,?)",

@@ -154,13 +154,12 @@ def main():
         return
 
     init_db()
-    acquire_llm_lock("synthesize_url", config.MODEL_SYNTHESIZE_URL)
-    print(f"Loading model {config.MODEL_SYNTHESIZE_URL}...")
-    load_model(config.MODEL_SYNTHESIZE_URL)
-
     run_id = str(uuid.uuid4())
 
     try:
+        acquire_llm_lock("synthesize_url", config.MODEL_SYNTHESIZE_URL)
+        print(f"Loading model {config.MODEL_SYNTHESIZE_URL}...")
+        load_model(config.MODEL_SYNTHESIZE_URL)
         with get_conn() as conn:
             conn.execute(
                 "INSERT INTO batch_runs (run_id, stage, batch_type, started_at) VALUES (?,?,?,?)",
