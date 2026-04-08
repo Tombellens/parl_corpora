@@ -18,6 +18,7 @@ Stores raw HTML to disk under RAW_HTML_DIR for traceability.
 
 import hashlib
 import re
+import time
 from pathlib import Path
 
 import requests
@@ -123,31 +124,44 @@ def fetch_and_clean(url: str, ua_index: int = 0,
     result = FetchResult()
     result.url = url
 
-    # ---- 1. HTTP fetch ----
-    try:
-        resp = requests.get(
-            url,
-            headers={
-                "User-Agent":      _ua(ua_index),
-                "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en,*;q=0.5",
-            },
-            timeout=FETCH_TIMEOUT_SECONDS,
-            allow_redirects=True,
-        )
-        result.http_status = resp.status_code
-        if resp.status_code >= 400:
-            result.error = f"HTTP {resp.status_code}"
+    # ---- 1. HTTP fetch (with one 403 retry using a different User-Agent) ----
+    html = None
+    for attempt in range(2):
+        try:
+            resp = requests.get(
+                url,
+                headers={
+                    "User-Agent":      _ua(ua_index + attempt),
+                    "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en,*;q=0.5",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "Cache-Control":   "no-cache",
+                },
+                timeout=FETCH_TIMEOUT_SECONDS,
+                allow_redirects=True,
+            )
+            result.http_status = resp.status_code
+            if resp.status_code == 403 and attempt == 0:
+                # Rotate UA and wait briefly before retry
+                time.sleep(2)
+                continue
+            if resp.status_code >= 400:
+                result.error = f"HTTP {resp.status_code}"
+                return result
+            html = resp.text
+            break
+        except requests.exceptions.Timeout:
+            result.error = "timeout"
             return result
-        html = resp.text
-    except requests.exceptions.Timeout:
-        result.error = "timeout"
-        return result
-    except requests.exceptions.TooManyRedirects:
-        result.error = "too_many_redirects"
-        return result
-    except Exception as e:
-        result.error = f"fetch_error: {type(e).__name__}: {e}"
+        except requests.exceptions.TooManyRedirects:
+            result.error = "too_many_redirects"
+            return result
+        except Exception as e:
+            result.error = f"fetch_error: {type(e).__name__}: {e}"
+            return result
+
+    if html is None:
+        result.error = f"HTTP {result.http_status}"
         return result
 
     # ---- 2. Store raw HTML ----

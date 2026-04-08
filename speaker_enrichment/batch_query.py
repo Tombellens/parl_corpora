@@ -22,6 +22,7 @@ Usage:
 import argparse
 import time
 import uuid
+from urllib.parse import urlparse
 
 import requests
 from tqdm import tqdm
@@ -33,6 +34,37 @@ from db import (
     fetch_pending_speakers, get_conn, init_db,
     now_iso, set_speaker_status, upsert_speaker_url,
 )
+
+
+# ---------------------------------------------------------------------------
+# Domain blacklist — sites that will never yield scrapable biographical text
+# ---------------------------------------------------------------------------
+BLACKLISTED_DOMAINS = {
+    # Social media / login-walled
+    "facebook.com", "www.facebook.com",
+    "instagram.com", "www.instagram.com",
+    "twitter.com", "www.twitter.com", "x.com", "www.x.com",
+    "linkedin.com", "www.linkedin.com",
+    "tiktok.com", "www.tiktok.com",
+    "youtube.com", "www.youtube.com",
+    # Image / media asset hosts (no text)
+    "bilddatenbank.bundestag.de",
+    # Generic homepages / search engines
+    "google.com", "www.google.com",
+    "bing.com", "www.bing.com",
+    "duckduckgo.com",
+}
+
+
+def _is_blacklisted(url: str) -> bool:
+    """Return True if the URL's domain is in the blacklist."""
+    try:
+        host = urlparse(url).hostname or ""
+        return host in BLACKLISTED_DOMAINS or any(
+            host.endswith("." + d) for d in BLACKLISTED_DOMAINS
+        )
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +164,8 @@ def process_speaker(conn, speaker: dict, run_id: str) -> bool:
         for rank, r in enumerate(results, start=1):
             url = r["url"].strip()
             if not url or url in seen_urls:
+                continue
+            if _is_blacklisted(url):
                 continue
             seen_urls.add(url)
             upsert_speaker_url(
