@@ -31,6 +31,7 @@ from db import (
 from llm_client import (
     acquire_llm_lock, chat, extract_json,
     is_llm_locked, load_model, release_llm_lock,
+    unload_all_models,
 )
 
 
@@ -92,6 +93,8 @@ def process_speaker(conn, speaker: dict) -> tuple[int, int]:
     ).fetchall()
 
     if not pending_urls:
+        set_speaker_status(conn, sid, "url_synth", SKIPPED,
+                           error="no successfully fetched URLs")
         return 0, 0
 
     n_done = n_failed = 0
@@ -220,6 +223,7 @@ def main():
         print(f"\nDone.  success={n_success}  failed={n_failed}")
 
     finally:
+        unload_all_models()
         release_llm_lock()
 
 

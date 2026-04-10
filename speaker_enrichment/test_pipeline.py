@@ -72,7 +72,7 @@ from db import (
 )
 from llm_client import (
     acquire_llm_lock, chat, extract_json,
-    is_llm_locked, load_model, release_llm_lock,
+    is_llm_locked, load_model, release_llm_lock, unload_all_models,
 )
 from web_cleaner import fetch_and_clean
 
@@ -341,6 +341,7 @@ def run_url_synth(speakers, verbose: bool) -> None:
                         if len((s["synthesis_text"] or "").splitlines()) > 6:
                             info("    …")
     finally:
+        unload_all_models()
         release_llm_lock()
 
 
@@ -377,6 +378,7 @@ def run_cv_synth(speakers, verbose: bool) -> None:
                 else:
                     fail(f"{name}  →  no CV produced")
     finally:
+        unload_all_models()
         release_llm_lock()
 
 
@@ -423,6 +425,7 @@ def _run_annotation(speakers, module, group: str, verbose: bool) -> None:
                                        error=str(e)[:200])
                     fail(f"{name}: {e}")
     finally:
+        unload_all_models()
         release_llm_lock()
 
 

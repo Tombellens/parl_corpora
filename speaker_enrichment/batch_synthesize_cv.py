@@ -35,6 +35,7 @@ from db import (
 from llm_client import (
     acquire_llm_lock, chat,
     is_llm_locked, load_model, release_llm_lock,
+    unload_all_models,
 )
 
 
@@ -192,6 +193,7 @@ def main():
         print(f"\nDone.  success={n_success}  failed={n_failed}")
 
     finally:
+        unload_all_models()
         release_llm_lock()
 
 
