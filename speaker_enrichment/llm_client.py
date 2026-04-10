@@ -140,16 +140,14 @@ def load_model(model_id: str, context_length: int = 16384,
                flash_attention: bool = True, **kwargs) -> dict:
     """
     Ask LM Studio to load a model into GPU memory.
-    If the server is not running, attempts to auto-start it via `lms server start`.
     Returns the response dict (includes instance_id and load_time_seconds).
+    Raises RuntimeError if the LM Studio server is not running.
     """
     if not is_lm_studio_running():
-        started = start_lm_studio_server()
-        if not started:
-            raise RuntimeError(
-                "LM Studio server is not running and could not be auto-started. "
-                f"Start it manually with: {LMS_BIN} server start"
-            )
+        raise RuntimeError(
+            "LM Studio server is not running. "
+            "Start it with: lms server start"
+        )
 
     payload = {
         "model": model_id,
