@@ -204,7 +204,13 @@ def run_query(speakers, verbose: bool) -> None:
                 name    = (sp.get("name_cleaned") or "Test").strip()
                 country = (sp.get("country") or "GB").upper()
                 # Wikipedia URL slug: capitalise first letter of each word
-                slug    = "_".join(w.capitalize() for w in name.split())
+                # and each hyphenated sub-part (e.g. Hans-Michael, not Hans-michael)
+                def _wiki_slug(n: str) -> str:
+                    return "_".join(
+                        "-".join(part.capitalize() for part in word.split("-"))
+                        for word in n.split()
+                    )
+                slug = _wiki_slug(name)
                 # Primary language for this country (for non-English Wikipedia)
                 primary_lang = config.COUNTRY_LANGUAGES.get(country, ["en"])[0]
 
