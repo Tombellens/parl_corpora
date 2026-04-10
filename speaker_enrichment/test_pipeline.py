@@ -15,11 +15,14 @@ Options:
     --stage STAGE    Test only one specific stage and stop
                      Choices: query fetch url_synth cv_synth annotate_a annotate_b
                               annotate_c annotate_d
+    --skip-search    Skip Brave API calls entirely; use Wikipedia URLs as stand-ins.
+                     Useful for testing fetch/LLM stages without spending API credits.
     --keep           Keep the test DB and files after the run (for inspection)
     --verbose        Print LLM inputs/outputs and synthesised text
 
 Example:
-    python3 test_pipeline.py --n 3 --country FR --verbose
+    python3 test_pipeline.py --n 3 --country FR --skip-search --verbose
+    python3 test_pipeline.py --n 5 --skip-search --stage fetch
     python3 test_pipeline.py --n 10 --stage query
 """
 
@@ -194,24 +197,34 @@ def run_query(speakers, verbose: bool) -> None:
     section("STAGE: query  (Brave Search API)")
     if not config.BRAVE_API_KEY:
         warn("BRAVE_API_KEY not set — skipping live Brave calls.")
-        warn("Inserting 2 dummy URLs per speaker so downstream stages can run.")
+        warn("Inserting Wikipedia dummy URLs per speaker so downstream stages can run.")
         with get_conn() as conn:
             for sp in speakers:
-                sid  = sp["speaker_id"]
-                name = sp["name_cleaned"] or "Test"
-                # Insert dummy Wikipedia-style URLs for testing
-                slug = name.lower().replace(" ", "_")
-                for i, (lang, url) in enumerate([
-                    ("en", f"https://en.wikipedia.org/wiki/{slug}"),
-                    ("en", f"https://www.wikidata.org/wiki/Q{abs(hash(name)) % 100000}"),
-                ], start=1):
+                sid     = sp["speaker_id"]
+                name    = (sp.get("name_cleaned") or "Test").strip()
+                country = (sp.get("country") or "GB").upper()
+                # Wikipedia URL slug: capitalise first letter of each word
+                slug    = "_".join(w.capitalize() for w in name.split())
+                # Primary language for this country (for non-English Wikipedia)
+                primary_lang = config.COUNTRY_LANGUAGES.get(country, ["en"])[0]
+
+                # Always add the English Wikipedia page
+                candidates = [("en", f"https://en.wikipedia.org/wiki/{slug}")]
+                # Add the primary-language Wikipedia page if not English
+                if primary_lang != "en":
+                    candidates.append(
+                        (primary_lang, f"https://{primary_lang}.wikipedia.org/wiki/{slug}")
+                    )
+
+                for i, (lang, url) in enumerate(candidates, start=1):
                     upsert_speaker_url(conn, sid, url,
                                        query_language=lang,
                                        query_string=f"[dummy] {name} parliament biography",
                                        search_rank=i,
                                        discovered_at=now_iso())
-                set_speaker_status(conn, sid, "query", SUCCESS, query_n_urls=2)
-        ok("Dummy URLs inserted.")
+                set_speaker_status(conn, sid, "query", SUCCESS,
+                                   query_n_urls=len(candidates))
+        ok(f"Dummy Wikipedia URLs inserted (English + primary country language).")
         return
 
     with get_conn() as conn:
@@ -479,6 +492,9 @@ def main():
                         help="Keep test DB/files after the run")
     parser.add_argument("--verbose", action="store_true",
                         help="Print LLM outputs and per-URL details")
+    parser.add_argument("--skip-search", action="store_true",
+                        help="Skip Brave API calls and use Wikipedia dummy URLs instead "
+                             "(useful for testing without spending API credits)")
     args = parser.parse_args()
 
     header(f"SPEAKER ENRICHMENT — TEST MODE"
@@ -513,6 +529,9 @@ def main():
 
     # Run stages
     stages_to_run = [args.stage] if args.stage else STAGE_ORDER
+
+    if args.skip_search:
+        config.BRAVE_API_KEY = ""   # force dummy-URL path in run_query
 
     stage_fns = {
         "query":      lambda: run_query(speakers, args.verbose),

@@ -27,6 +27,11 @@ BRAVE_API_KEY         = os.environ.get("BRAVE_API_KEY", "")
 BRAVE_ENDPOINT        = "https://api.search.brave.com/res/v1/web/search"
 BRAVE_RESULTS_PER_QUERY = 10
 BRAVE_RATE_LIMIT_DELAY  = 1.1   # seconds between calls (stay under free-tier limit)
+# Max Brave API calls per speaker.  Each call = $0.005.
+# Strategy: primary country language + English = at most 2 calls/speaker.
+# For English-native countries (GB, AU, US, NZ) this is already 1 call.
+# Set to 1 to use only the primary language and cut costs in half.
+BRAVE_MAX_QUERIES_PER_SPEAKER = 2
 
 # ---------------------------------------------------------------------------
 # LM Studio

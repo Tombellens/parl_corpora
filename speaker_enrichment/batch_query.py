@@ -114,19 +114,28 @@ def brave_search(query: str, count: int = 10) -> list[dict]:
 def build_queries(name: str, country: str) -> list[tuple[str, str]]:
     """
     Return [(query_string, language_code), ...] for this speaker.
-    Always includes an English query; adds one per country language.
+
+    Strategy (cost-aware):
+      - Always query in the primary country language (index 0).
+      - Always add an English query if the primary language is not English.
+      - Never exceed BRAVE_MAX_QUERIES_PER_SPEAKER API calls.
+
+    This caps Belgium (fr/nl/de/en) at 2 calls (fr + en) instead of 4,
+    keeping per-speaker cost at ≤$0.01 regardless of country.
     """
     langs = config.COUNTRY_LANGUAGES.get(country, ["en"])
-    # Deduplicate but preserve order; English last if not already there
-    if "en" not in langs:
-        langs = langs + ["en"]
+    primary = langs[0]
+
+    # Build the priority list: primary language first, then English (if different)
+    priority = [primary]
+    if "en" not in priority:
+        priority.append("en")
+
+    # Respect the hard cap
+    priority = priority[: config.BRAVE_MAX_QUERIES_PER_SPEAKER]
 
     queries = []
-    seen_langs = set()
-    for lang in langs:
-        if lang in seen_langs:
-            continue
-        seen_langs.add(lang)
+    for lang in priority:
         parl = config.PARLIAMENT_WORD.get(lang, "parliament")
         bio  = config.BIOGRAPHY_WORD.get(lang, "biography")
         q = f'"{name}" {parl} {bio}'
