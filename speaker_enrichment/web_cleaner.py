@@ -7,19 +7,23 @@ navigation, ads, cookie banners, scripts, styles, footers, social-share
 widgets, etc.
 
 Strategy (in order):
-  1. Fetch with requests (rotating user agent, timeout)
-  2. Try trafilatura  — best at extracting main article body
-  3. Fall back to BeautifulSoup — removes boilerplate tags, then converts
+  1. Wikipedia URLs → Wikipedia w/api.php (plain-text extract, no bot blocking)
+  2. Fetch with requests (rotating user agent, timeout)
+  3. Try trafilatura  — best at extracting main article body
+  4. Fall back to BeautifulSoup — removes boilerplate tags, then converts
      remaining text
-  4. Truncate to MAX_CLEANED_TEXT_CHARS
+  5. Truncate to MAX_CLEANED_TEXT_CHARS
 
 Stores raw HTML to disk under RAW_HTML_DIR for traceability.
+Wikipedia API responses are stored as .txt files (no raw HTML to save).
 """
 
 import hashlib
+import json
 import re
 import time
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import requests
 import trafilatura
@@ -79,6 +83,83 @@ def _ua(idx: int = 0) -> str:
     return USER_AGENTS[idx % len(USER_AGENTS)]
 
 
+def _is_wikipedia_url(url: str) -> bool:
+    """Return True for Wikipedia article URLs (any language)."""
+    host = urlparse(url).hostname or ""
+    # matches xx.wikipedia.org but not xx.wikimedia.org or wikisource etc.
+    return bool(re.match(r"^[a-z]{2,3}\.wikipedia\.org$", host))
+
+
+def _fetch_wikipedia_api(url: str, timeout: int) -> "FetchResult":
+    """
+    Fetch a Wikipedia article via the w/api.php plain-text extract endpoint.
+    Avoids the HTML endpoint entirely (which gets 403-blocked on server IPs).
+    Returns a populated FetchResult on success, or one with .error set.
+    """
+    result = FetchResult()
+    result.url = url
+
+    parsed = urlparse(url)
+    lang   = (parsed.hostname or "en").split(".")[0]   # "en", "de", "fr", …
+    # Title is the last path component, URL-decoded
+    title  = unquote(parsed.path.lstrip("/").split("/")[-1])
+
+    api_url = f"https://{lang}.wikipedia.org/w/api.php"
+    params  = {
+        "action":      "query",
+        "prop":        "extracts",
+        "titles":      title,
+        "explaintext": "1",    # plain text, no HTML markup
+        "redirects":   "1",    # follow redirects automatically
+        "format":      "json",
+        "formatversion": "2",
+    }
+
+    try:
+        resp = requests.get(
+            api_url, params=params,
+            headers={"User-Agent": "ParlSpeakerEnrichment/1.0 (research bot)"},
+            timeout=timeout,
+        )
+        result.http_status = resp.status_code
+        if resp.status_code >= 400:
+            result.error = f"HTTP {resp.status_code}"
+            return result
+
+        data  = resp.json()
+        pages = data.get("query", {}).get("pages", [])
+        if not pages:
+            result.error = "wikipedia_api_empty"
+            return result
+
+        page  = pages[0]
+        if page.get("missing"):
+            result.error = "wikipedia_page_missing"
+            return result
+
+        text = (page.get("extract") or "").strip()
+        if not text or len(text) < 20:
+            result.error = "no_text_extracted"
+            return result
+
+        if len(text) > MAX_CLEANED_TEXT_CHARS:
+            text = text[:MAX_CLEANED_TEXT_CHARS] + "\n[TRUNCATED]"
+
+        # Store the text as a .txt file for traceability
+        raw_dir  = Path(RAW_HTML_DIR)
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        filename = hashlib.sha1(url.encode()).hexdigest() + ".txt"
+        (raw_dir / filename).write_text(text, encoding="utf-8")
+        result.raw_html_path   = filename
+        result.cleaned_text    = text
+        result.cleaned_text_len = len(text)
+        return result
+
+    except Exception as e:
+        result.error = f"fetch_error: {type(e).__name__}: {e}"
+        return result
+
+
 def _bs_extract(html: str) -> str:
     """BeautifulSoup fallback extractor."""
     soup = BeautifulSoup(html, "lxml")
@@ -123,6 +204,10 @@ def fetch_and_clean(url: str, ua_index: int = 0,
     """
     result = FetchResult()
     result.url = url
+
+    # ---- 0. Wikipedia shortcut — use the API to avoid HTML bot-blocking ----
+    if _is_wikipedia_url(url):
+        return _fetch_wikipedia_api(url, timeout=FETCH_TIMEOUT_SECONDS)
 
     # ---- 1. HTTP fetch (with one 403 retry using a different User-Agent) ----
     html = None
