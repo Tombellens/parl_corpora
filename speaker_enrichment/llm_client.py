@@ -82,16 +82,21 @@ def start_lm_studio_server() -> bool:
     False otherwise.
     """
     lms = LMS_BIN if Path(LMS_BIN).exists() else "lms"
-    print(f"  LM Studio not running — attempting `lms server start`…")
+    print(f"  LM Studio not running — running `lms server start` in background…")
 
-    code, out = _lms_run(lms, "server", "start", timeout=10)
-    if out:
-        print(f"  [server start] {out}")
-    if code not in (0, -1):
-        print(f"  lms server start exited with code {code} — server may need to be started manually.")
+    # lms server start blocks for the lifetime of the server, so run it
+    # as a background process and poll the API separately.
+    try:
+        subprocess.Popen(
+            [lms, "server", "start"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        print(f"  ✗ lms binary not found at {lms}.")
         return False
 
-    # Poll for responsiveness
+    # Poll until the API responds
     deadline = time.time() + LMS_SERVER_STARTUP_TIMEOUT
     while time.time() < deadline:
         time.sleep(2)
