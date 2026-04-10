@@ -54,28 +54,48 @@ def is_lm_studio_running() -> bool:
         return False
 
 
+def _lms_run(lms: str, *args, timeout: int = 15) -> tuple[int, str]:
+    """Run an lms subcommand, return (returncode, combined output)."""
+    try:
+        result = subprocess.run(
+            [lms, *args],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, timeout=timeout,
+        )
+        return result.returncode, result.stdout.strip()
+    except subprocess.TimeoutExpired:
+        return -1, f"timed out after {timeout}s"
+    except FileNotFoundError:
+        return -1, f"binary not found: {lms}"
+
+
 def start_lm_studio_server() -> bool:
     """
-    Launch the LM Studio server via `lms server start` and wait for it to
-    become responsive.  Returns True if the server is up within the timeout,
-    False otherwise.
+    Launch the LM Studio server and wait for it to become responsive.
+
+    Sequence:
+      1. lms daemon up    — ensures the background LM Studio service is running
+      2. lms server start — starts the HTTP API on port 1234
+      3. Poll until the API responds (up to LMS_SERVER_STARTUP_TIMEOUT seconds)
+
+    Returns True if the server is up, False otherwise.
     """
-    lms = LMS_BIN
-    if not Path(lms).exists():
-        # Fall back to PATH lookup
-        lms = "lms"
+    lms = LMS_BIN if Path(LMS_BIN).exists() else "lms"
+    print(f"  LM Studio not running — starting server…")
 
-    print(f"  LM Studio not running — starting server ({lms} server start)…")
-    try:
-        subprocess.Popen(
-            [lms, "server", "start"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except FileNotFoundError:
-        print(f"  ✗ lms binary not found at {LMS_BIN} — cannot auto-start LM Studio.")
-        return False
+    # Step 1: bring up the daemon
+    code, out = _lms_run(lms, "daemon", "up")
+    if out:
+        print(f"  [daemon up] {out}")
+    if code not in (0, -1):   # -1 = timeout, daemon may still be starting
+        print(f"  Warning: lms daemon up exited {code}")
 
+    # Step 2: start the HTTP server
+    code, out = _lms_run(lms, "server", "start")
+    if out:
+        print(f"  [server start] {out}")
+
+    # Step 3: poll for responsiveness
     deadline = time.time() + LMS_SERVER_STARTUP_TIMEOUT
     while time.time() < deadline:
         time.sleep(2)
