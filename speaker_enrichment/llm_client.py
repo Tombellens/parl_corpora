@@ -71,31 +71,27 @@ def _lms_run(lms: str, *args, timeout: int = 15) -> tuple[int, str]:
 
 def start_lm_studio_server() -> bool:
     """
-    Launch the LM Studio server and wait for it to become responsive.
+    Attempt to start the LM Studio HTTP server via `lms server start`.
 
-    Sequence:
-      1. lms daemon up    — ensures the background LM Studio service is running
-      2. lms server start — starts the HTTP API on port 1234
-      3. Poll until the API responds (up to LMS_SERVER_STARTUP_TIMEOUT seconds)
+    NOTE: On headless Linux servers, LM Studio's daemon requires a running
+    desktop environment and cannot be auto-started programmatically.
+    If this fails, start LM Studio manually (open the GUI or configure it
+    as a systemd service) and ensure the API server is enabled in settings.
 
-    Returns True if the server is up, False otherwise.
+    Returns True if the server comes up within LMS_SERVER_STARTUP_TIMEOUT,
+    False otherwise.
     """
     lms = LMS_BIN if Path(LMS_BIN).exists() else "lms"
-    print(f"  LM Studio not running — starting server…")
+    print(f"  LM Studio not running — attempting `lms server start`…")
 
-    # Step 1: bring up the daemon
-    code, out = _lms_run(lms, "daemon", "up")
-    if out:
-        print(f"  [daemon up] {out}")
-    if code not in (0, -1):   # -1 = timeout, daemon may still be starting
-        print(f"  Warning: lms daemon up exited {code}")
-
-    # Step 2: start the HTTP server
-    code, out = _lms_run(lms, "server", "start")
+    code, out = _lms_run(lms, "server", "start", timeout=10)
     if out:
         print(f"  [server start] {out}")
+    if code not in (0, -1):
+        print(f"  lms server start exited with code {code} — server may need to be started manually.")
+        return False
 
-    # Step 3: poll for responsiveness
+    # Poll for responsiveness
     deadline = time.time() + LMS_SERVER_STARTUP_TIMEOUT
     while time.time() < deadline:
         time.sleep(2)
@@ -103,7 +99,11 @@ def start_lm_studio_server() -> bool:
             print("  ✓ LM Studio server is up.")
             return True
 
-    print(f"  ✗ LM Studio did not start within {LMS_SERVER_STARTUP_TIMEOUT}s.")
+    print(
+        f"  ✗ LM Studio did not respond within {LMS_SERVER_STARTUP_TIMEOUT}s.\n"
+        f"  On headless servers, start LM Studio manually and enable the API server\n"
+        f"  in LM Studio Settings → Local Server, or run: {lms} server start"
+    )
     return False
 
 
