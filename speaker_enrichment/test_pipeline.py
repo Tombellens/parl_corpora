@@ -72,7 +72,7 @@ from db import (
 )
 from llm_client import (
     acquire_llm_lock, chat, extract_json,
-    is_llm_locked, load_model, release_llm_lock, unload_all_models,
+    is_llm_locked, load_model, release_llm_lock, unload_model,
 )
 from web_cleaner import fetch_and_clean
 
@@ -315,9 +315,10 @@ def run_fetch(speakers, verbose: bool) -> None:
 def run_url_synth(speakers, verbose: bool) -> None:
     section("STAGE: url_synth  (per-URL LLM synthesis)")
     acquire_llm_lock("test_url_synth", config.MODEL_SYNTHESIZE_URL)
+    _loaded_instance = None
     try:
         try:
-            load_model(config.MODEL_SYNTHESIZE_URL)
+            _loaded_instance = load_model(config.MODEL_SYNTHESIZE_URL).get("instance_id")
         except Exception as e:
             warn(f"Could not load model '{config.MODEL_SYNTHESIZE_URL}': {e}")
             warn("Check that LM Studio is running and the model ID in config.py is correct.")
@@ -341,16 +342,21 @@ def run_url_synth(speakers, verbose: bool) -> None:
                         if len((s["synthesis_text"] or "").splitlines()) > 6:
                             info("    …")
     finally:
-        unload_all_models()
+        if _loaded_instance:
+            try:
+                unload_model(_loaded_instance)
+            except Exception:
+                pass
         release_llm_lock()
 
 
 def run_cv_synth(speakers, verbose: bool) -> None:
     section("STAGE: cv_synth  (merge snippets → CV)")
     acquire_llm_lock("test_cv_synth", config.MODEL_SYNTHESIZE_CV)
+    _loaded_instance = None
     try:
         try:
-            load_model(config.MODEL_SYNTHESIZE_CV)
+            _loaded_instance = load_model(config.MODEL_SYNTHESIZE_CV).get("instance_id")
         except Exception as e:
             warn(f"Could not load model '{config.MODEL_SYNTHESIZE_CV}': {e}")
             warn("Skipping cv_synth stage.")
@@ -378,15 +384,20 @@ def run_cv_synth(speakers, verbose: bool) -> None:
                 else:
                     fail(f"{name}  →  no CV produced")
     finally:
-        unload_all_models()
+        if _loaded_instance:
+            try:
+                unload_model(_loaded_instance)
+            except Exception:
+                pass
         release_llm_lock()
 
 
 def _run_annotation(speakers, module, group: str, verbose: bool) -> None:
     acquire_llm_lock(f"test_annotate_{group}", getattr(config, f"MODEL_ANNOTATE_{group}"))
+    _loaded_instance = None
     try:
         try:
-            load_model(getattr(config, f"MODEL_ANNOTATE_{group}"))
+            _loaded_instance = load_model(getattr(config, f"MODEL_ANNOTATE_{group}")).get("instance_id")
         except Exception as e:
             warn(f"Could not load model for group {group}: {e}")
             warn(f"Skipping annotate_{group} stage.")
@@ -425,7 +436,11 @@ def _run_annotation(speakers, module, group: str, verbose: bool) -> None:
                                        error=str(e)[:200])
                     fail(f"{name}: {e}")
     finally:
-        unload_all_models()
+        if _loaded_instance:
+            try:
+                unload_model(_loaded_instance)
+            except Exception:
+                pass
         release_llm_lock()
 
 

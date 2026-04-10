@@ -33,7 +33,7 @@ from db import (
 from llm_client import (
     acquire_llm_lock, chat, extract_json,
     is_llm_locked, load_model, release_llm_lock,
-    unload_all_models,
+    unload_model,
 )
 
 
@@ -83,10 +83,11 @@ def main():
     init_db()
     run_id = str(uuid.uuid4())
 
+    _loaded_instance = None
     try:
         acquire_llm_lock(f"annotate_{GROUP}", config.MODEL_ANNOTATE_A)
         print(f"Loading model {config.MODEL_ANNOTATE_A}...")
-        load_model(config.MODEL_ANNOTATE_A)
+        _loaded_instance = load_model(config.MODEL_ANNOTATE_A).get("instance_id")
         with get_conn() as conn:
             conn.execute(
                 "INSERT INTO batch_runs (run_id, stage, batch_type, started_at) VALUES (?,?,?,?)",
@@ -180,7 +181,11 @@ def main():
         print(f"\nDone.  success={n_success}  failed={n_failed}")
 
     finally:
-        unload_all_models()
+        if _loaded_instance:
+            try:
+                unload_model(_loaded_instance)
+            except Exception:
+                pass
         release_llm_lock()
 
 

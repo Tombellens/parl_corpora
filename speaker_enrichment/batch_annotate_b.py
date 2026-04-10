@@ -38,7 +38,7 @@ from db import (
 from llm_client import (
     acquire_llm_lock, chat, extract_json,
     is_llm_locked, load_model, release_llm_lock,
-    unload_all_models,
+    unload_model,
 )
 
 
@@ -94,10 +94,11 @@ def main():
     init_db()
     run_id = str(uuid.uuid4())
 
+    _loaded_instance = None
     try:
         acquire_llm_lock(f"annotate_{GROUP}", config.MODEL_ANNOTATE_B)
         print(f"Loading model {config.MODEL_ANNOTATE_B}...")
-        load_model(config.MODEL_ANNOTATE_B)
+        _loaded_instance = load_model(config.MODEL_ANNOTATE_B).get("instance_id")
 
         with get_conn() as conn:
             conn.execute(
@@ -192,7 +193,11 @@ def main():
         print(f"\nDone.  success={n_success}  failed={n_failed}")
 
     finally:
-        unload_all_models()
+        if _loaded_instance:
+            try:
+                unload_model(_loaded_instance)
+            except Exception:
+                pass
         release_llm_lock()
 
 
