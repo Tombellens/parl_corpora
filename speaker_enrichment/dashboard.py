@@ -360,7 +360,9 @@ hr{border:none;border-top:1px solid #30363d;margin:12px 0}
     {% if lm_studio_running %}
     <span class="badge s-success">server running</span>
     <form method="post" action="/lmstudio/stop" style="display:inline;margin:0">
-      <button class="stage-btn btn-red" type="submit">Stop server</button>
+      <button class="stage-btn btn-red" type="submit"
+        {% if lock and lock.alive %}disabled title="LLM lock held by {{ lock.task }} — wait for pipeline to finish"{% endif %}>
+        Stop server</button>
     </form>
     {% else %}
     <span class="badge s-failed">server offline</span>
@@ -976,6 +978,14 @@ def lmstudio_start():
 
 @app.route("/lmstudio/stop", methods=["POST"])
 def lmstudio_stop():
+    from llm_client import is_llm_locked
+    if is_llm_locked():
+        lock = read_llm_lock()
+        return _render(**_flash(
+            f"Cannot stop server — LLM lock is held by PID {lock.get('pid')} "
+            f"(task={lock.get('task')}). Wait for the pipeline stage to finish first.",
+            ok=False
+        ))
     try:
         stop_lm_studio_server()
         return _render(**_flash("LM Studio server stopped."))
