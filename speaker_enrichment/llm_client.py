@@ -14,13 +14,17 @@ The lock file is JSON:
 
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 
 import requests
 from openai import OpenAI
 
-from config import LM_STUDIO_BASE_URL, LM_STUDIO_API_KEY, LLM_LOCK_FILE
+from config import (
+    LM_STUDIO_BASE_URL, LM_STUDIO_API_KEY, LLM_LOCK_FILE,
+    LMS_BIN, LMS_SERVER_STARTUP_TIMEOUT,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +36,66 @@ def _headers() -> dict:
         "Authorization": f"Bearer {LM_STUDIO_API_KEY}",
         "Content-Type":  "application/json",
     }
+
+
+# ---------------------------------------------------------------------------
+# LM Studio server management  (uses the lms CLI)
+# ---------------------------------------------------------------------------
+
+def is_lm_studio_running() -> bool:
+    """Return True if the LM Studio server is up and answering requests."""
+    try:
+        r = requests.get(
+            f"{LM_STUDIO_BASE_URL}/api/v1/models",
+            headers=_headers(), timeout=3,
+        )
+        return r.status_code < 500
+    except Exception:
+        return False
+
+
+def start_lm_studio_server() -> bool:
+    """
+    Launch the LM Studio server via `lms server start` and wait for it to
+    become responsive.  Returns True if the server is up within the timeout,
+    False otherwise.
+    """
+    lms = LMS_BIN
+    if not Path(lms).exists():
+        # Fall back to PATH lookup
+        lms = "lms"
+
+    print(f"  LM Studio not running — starting server ({lms} server start)…")
+    try:
+        subprocess.Popen(
+            [lms, "server", "start"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        print(f"  ✗ lms binary not found at {LMS_BIN} — cannot auto-start LM Studio.")
+        return False
+
+    deadline = time.time() + LMS_SERVER_STARTUP_TIMEOUT
+    while time.time() < deadline:
+        time.sleep(2)
+        if is_lm_studio_running():
+            print("  ✓ LM Studio server is up.")
+            return True
+
+    print(f"  ✗ LM Studio did not start within {LMS_SERVER_STARTUP_TIMEOUT}s.")
+    return False
+
+
+def stop_lm_studio_server() -> None:
+    """Stop the LM Studio server via `lms server stop`."""
+    lms = LMS_BIN if Path(LMS_BIN).exists() else "lms"
+    try:
+        subprocess.run([lms, "server", "stop"], timeout=15,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print("  LM Studio server stopped.")
+    except Exception as e:
+        print(f"  Warning: could not stop LM Studio server: {e}")
 
 
 def list_models() -> list[dict]:
@@ -51,8 +115,17 @@ def load_model(model_id: str, context_length: int = 16384,
                flash_attention: bool = True, **kwargs) -> dict:
     """
     Ask LM Studio to load a model into GPU memory.
+    If the server is not running, attempts to auto-start it via `lms server start`.
     Returns the response dict (includes instance_id and load_time_seconds).
     """
+    if not is_lm_studio_running():
+        started = start_lm_studio_server()
+        if not started:
+            raise RuntimeError(
+                "LM Studio server is not running and could not be auto-started. "
+                f"Start it manually with: {LMS_BIN} server start"
+            )
+
     payload = {
         "model": model_id,
         "context_length": context_length,

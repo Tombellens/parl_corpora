@@ -38,6 +38,12 @@ BRAVE_MAX_QUERIES_PER_SPEAKER = 2
 # ---------------------------------------------------------------------------
 LM_STUDIO_BASE_URL = "http://localhost:1234"
 LM_STUDIO_API_KEY  = "lm-studio"
+# Path to the lms CLI binary — used to auto-start the server if it's down.
+# Typical locations:
+#   ~/.lmstudio/bin/lms          (Linux default install)
+#   /usr/local/bin/lms           (if added to PATH manually)
+LMS_BIN            = os.path.expanduser("~/.lmstudio/bin/lms")
+LMS_SERVER_STARTUP_TIMEOUT = 60   # seconds to wait for server to come up
 
 # Models — fill in once you decide; these are placeholders
 MODEL_SYNTHESIZE_URL = "openai/gpt-oss-20b"   # per-URL synthesis

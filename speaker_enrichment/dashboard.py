@@ -39,7 +39,8 @@ from db import (
     init_db, now_iso, STAGES,
 )
 from llm_client import (
-    get_loaded_models, load_model, read_llm_lock, unload_model,
+    get_loaded_models, is_lm_studio_running, load_model,
+    read_llm_lock, start_lm_studio_server, stop_lm_studio_server, unload_model,
 )
 
 HERE = Path(__file__).parent
@@ -353,7 +354,24 @@ hr{border:none;border-top:1px solid #30363d;margin:12px 0}
 <!-- LLM Controls -->
 <div class="card">
   <h3>LLM — LM Studio</h3>
-  <p>
+
+  <!-- Server status row -->
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+    {% if lm_studio_running %}
+    <span class="badge s-success">server running</span>
+    <form method="post" action="/lmstudio/stop" style="display:inline;margin:0">
+      <button class="stage-btn btn-red" type="submit">Stop server</button>
+    </form>
+    {% else %}
+    <span class="badge s-failed">server offline</span>
+    <form method="post" action="/lmstudio/start" style="display:inline;margin:0">
+      <button class="stage-btn btn-green" type="submit">Start server</button>
+    </form>
+    {% endif %}
+  </div>
+
+  <!-- Lock status -->
+  <p style="margin:4px 0">
     {% if lock and lock.alive %}
     <span class="lock-on">LOCKED</span> &nbsp;
     <span class="mono">{{ lock.task }} · {{ lock.model }}</span><br>
@@ -363,6 +381,8 @@ hr{border:none;border-top:1px solid #30363d;margin:12px 0}
     {% endif %}
   </p>
   <hr>
+
+  <!-- Loaded models -->
   {% if loaded_models %}
   {% for m in loaded_models %}
   <div style="margin:4px 0;display:flex;align-items:center;gap:6px">
@@ -701,8 +721,9 @@ def _base_ctx(**extra):
             "SELECT * FROM batch_runs ORDER BY started_at DESC LIMIT 25"
         ).fetchall()
 
+    lm_running = is_lm_studio_running()
     try:
-        loaded_models = get_loaded_models()
+        loaded_models = get_loaded_models() if lm_running else []
     except Exception:
         loaded_models = []
 
@@ -714,6 +735,7 @@ def _base_ctx(**extra):
         failure_batches=[dict(r) for r in failure_batches],
         recent_runs=[dict(r) for r in recent_runs],
         loaded_models=loaded_models,
+        lm_studio_running=lm_running,
         lock=read_llm_lock(),
         processes=_pm.list_all(),
         stage_scripts=STAGE_SCRIPTS,
@@ -937,6 +959,28 @@ def llm_unload():
         return _render(**_flash(f"Model '{instance_id}' unloaded."))
     except Exception as e:
         return _render(**_flash(f"Error unloading: {e}", ok=False))
+
+
+@app.route("/lmstudio/start", methods=["POST"])
+def lmstudio_start():
+    if is_lm_studio_running():
+        return _render(**_flash("LM Studio server is already running."))
+    ok = start_lm_studio_server()
+    if ok:
+        return _render(**_flash("LM Studio server started."))
+    return _render(**_flash(
+        "Could not start LM Studio server — is `lms` installed? "
+        f"Expected at: {config.LMS_BIN}", ok=False
+    ))
+
+
+@app.route("/lmstudio/stop", methods=["POST"])
+def lmstudio_stop():
+    try:
+        stop_lm_studio_server()
+        return _render(**_flash("LM Studio server stopped."))
+    except Exception as e:
+        return _render(**_flash(f"Error stopping server: {e}", ok=False))
 
 
 # ---------------------------------------------------------------------------
