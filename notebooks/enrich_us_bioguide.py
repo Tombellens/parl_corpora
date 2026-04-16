@@ -211,9 +211,9 @@ def build_lookup(members: list[dict]) -> dict:
 # 3. Parse US speaker strings
 # ---------------------------------------------------------------------------
 
-# Titles to strip
+# Titles to strip (period optional, comma treated as period)
 _TITLE_RE = re.compile(
-    r"^(Mr\.|Ms\.|Mrs\.|Miss|Dr\.|Hon\.|the\s+)?",
+    r"^(Mrs?[.,]?\s*|Ms\.?\s*|Miss\s*|Dr\.?\s*|Hon\.?\s*|the\s+)?",
     re.IGNORECASE,
 )
 
@@ -247,7 +247,14 @@ def parse_speaker_string(raw: str):
         state     = STATE_ABBREVS.get(state_str, state_str.upper()[:2])
         s         = s[: m.start()].strip()
 
-    last = s.strip().upper()
+    s = s.strip()
+
+    # If multiple words remain (e.g. "GENE GREEN", "DANIEL E. LUNGREN"),
+    # use only the last word as the surname — that's what the Bioguide indexes.
+    # Exception: hyphenated names like "JACKSON-LEE" stay as-is (single token).
+    tokens = s.split()
+    last = tokens[-1].upper() if tokens else ""
+
     if not last or len(last) < 2:
         return None, None
 
