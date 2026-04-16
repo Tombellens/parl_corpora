@@ -2,14 +2,15 @@
 enrich_us_bioguide.py
 =====================
 Resolves US Congressional Record speaker strings to full names and metadata
-using the Congress.gov Bioguide API.
+using the Congress.gov Bioguide API, with LLM disambiguation for uncertain cases.
 
 Steps:
-  1. Fetch all congress members from api.congress.gov (paginated)
-  2. Build lookup: (LAST_NAME, state_abbrev) → list of member records with date ranges
+  1. Fetch all congress members per-congress from api.congress.gov (cached)
+  2. Build lookup: (LAST_NAME, STATE) → list of member records with date ranges
   3. Parse each US speaker string → extract last name + state
-  4. Match to lookup using speaker date range
-  5. Update name_cleaned, and add bioguide_id, party, gender, birth_year columns
+  4. Pass 1: confident single-match cases resolved directly
+  5. Pass 2: ambiguous/unmatched cases sent to LM Studio with top-3 candidates
+  6. Update name_cleaned, bioguide_id, party columns
 
 Usage:
     python3 enrich_us_bioguide.py
@@ -29,8 +30,7 @@ from tqdm import tqdm
 # CONFIG
 # ---------------------------------------------------------------------------
 SPEAKER_NAMES_FILE = "/home/tom/data/speaker_names.csv"
-BIOGUIDE_CACHE        = "/home/tom/data/bioguide_members.json"
-BIOGUIDE_DETAIL_CACHE = "/home/tom/data/bioguide_details.json"
+BIOGUIDE_CACHE     = "/home/tom/data/bioguide_members.json"
 API_KEY            = "3jZ9bJYaUr7Ur190xArVeqNMiEH0xWkIZMxdLw3i"
 BASE_URL           = "https://api.congress.gov/v3"
 PAGE_SIZE          = 250
@@ -43,7 +43,7 @@ CR_CONGRESSES      = list(range(103, 119))
 LM_BASE_URL        = "http://localhost:1234/v1"
 LM_MODEL           = "openai/gpt-oss-20b"
 LM_BATCH_SIZE      = 20   # speakers per LLM call
-LM_MAX_TOKENS      = 2000
+LM_MAX_TOKENS      = 8000
 
 # State name → abbreviation
 STATE_ABBREVS = {
@@ -406,52 +406,6 @@ def resolve_with_llm(client: OpenAI,
 
 
 # ---------------------------------------------------------------------------
-# 3c. Fetch member details (gender, birth year) — cached
-# ---------------------------------------------------------------------------
-
-def fetch_member_details(bioguide_ids: list[str]) -> dict:
-    """
-    Returns {bioguide_id: {"gender": str, "birth_year": int|None}}
-    Loads/saves a local JSON cache so re-runs are fast.
-    """
-    if os.path.exists(BIOGUIDE_DETAIL_CACHE):
-        with open(BIOGUIDE_DETAIL_CACHE) as f:
-            cache = json.load(f)
-    else:
-        cache = {}
-
-    missing = [bid for bid in bioguide_ids if bid not in cache]
-    if missing:
-        print(f"  Fetching details for {len(missing):,} members (cached: {len(cache):,})...")
-        for i, bid in enumerate(tqdm(missing, desc="Details")):
-            try:
-                data   = _api_get(f"{BASE_URL}/member/{bid}", {"api_key": API_KEY})
-                member = data.get("member", {})
-                # gender: under depiction or directly
-                gender     = member.get("gender", "")
-                # birth year: birthYear field or from birthDate
-                birth_year = member.get("birthYear") or member.get("birthDate", "")[:4] or None
-                if birth_year:
-                    try:
-                        birth_year = int(str(birth_year)[:4])
-                    except (ValueError, TypeError):
-                        birth_year = None
-                cache[bid] = {"gender": gender, "birth_year": birth_year}
-            except Exception as e:
-                print(f"\n  ⚠️  Could not fetch details for {bid}: {e}")
-                cache[bid] = {"gender": "", "birth_year": None}
-            time.sleep(RATE_LIMIT_DELAY)
-
-        with open(BIOGUIDE_DETAIL_CACHE, "w") as f:
-            json.dump(cache, f)
-        print(f"  Details cached to {BIOGUIDE_DETAIL_CACHE}")
-    else:
-        print(f"  All {len(bioguide_ids):,} member details already cached.")
-
-    return cache
-
-
-# ---------------------------------------------------------------------------
 # 4. Main
 # ---------------------------------------------------------------------------
 
@@ -461,7 +415,7 @@ def main():
     print(f"  {len(df):,} rows loaded.")
 
     # Add metadata columns if missing
-    for col in ["bioguide_id", "us_party", "us_gender", "us_birth_year"]:
+    for col in ["bioguide_id", "us_party"]:
         if col not in df.columns:
             df[col] = None
 
@@ -478,64 +432,34 @@ def main():
     print(f"  Lookup has {len(lookup):,} keys.")
 
     # -----------------------------------------------------------------------
-    # Pass 1: Confident matches (single state+date filtered candidate)
+    # Build items: every US person speaker gets top-3 Bioguide candidates
     # -----------------------------------------------------------------------
-    print("\nPass 1: Confident Bioguide matches...")
-    confident = 0
-    uncertain_items  = []   # items to send to LLM
-    uncertain_idxs   = []   # corresponding df indices
-
-    for idx, row in tqdm(us_df.iterrows(), total=len(us_df), desc="Pass 1"):
+    print("\nBuilding candidate lists...")
+    items = []
+    idxs  = []
+    for idx, row in tqdm(us_df.iterrows(), total=len(us_df), desc="Candidates"):
         speaker = str(row["speaker"])
         last, state = parse_speaker_string(speaker)
-
-        if not last:
-            # Unparseable — still send to LLM with no candidates
-            uncertain_items.append({
-                "speaker": speaker,
-                "min_date": row["min_date"],
-                "max_date": row["max_date"],
-                "candidates": [],
-            })
-            uncertain_idxs.append(idx)
-            continue
-
-        match, candidates = get_candidates(last, state, row["min_date"], row["max_date"], lookup)
-
-        if match:
-            df.at[idx, "name_cleaned"] = match["full_name"]
-            df.at[idx, "bioguide_id"]  = match["bioguide_id"]
-            df.at[idx, "us_party"]     = match["party"]
-            confident += 1
-        else:
-            uncertain_items.append({
-                "speaker": speaker,
-                "min_date": row["min_date"],
-                "max_date": row["max_date"],
-                "candidates": candidates,
-            })
-            uncertain_idxs.append(idx)
-
-    print(f"  Confident matches: {confident:,}")
-    print(f"  Uncertain (→ LLM): {len(uncertain_items):,}")
+        _, candidates = get_candidates(last, state, row["min_date"], row["max_date"], lookup) if last else (None, [])
+        items.append({
+            "speaker":    speaker,
+            "min_date":   row["min_date"],
+            "max_date":   row["max_date"],
+            "candidates": candidates,
+        })
+        idxs.append(idx)
 
     # -----------------------------------------------------------------------
-    # Pass 2: LLM disambiguation for uncertain cases
+    # LLM resolution — all speakers, batched
     # -----------------------------------------------------------------------
-    print("\nPass 2: LLM disambiguation...")
-    client    = OpenAI(base_url=LM_BASE_URL, api_key="lm-studio")
-    llm_matched   = 0
-    llm_no_match  = 0
+    print("\nLLM resolution...")
+    client = OpenAI(base_url=LM_BASE_URL, api_key="lm-studio")
+    llm_matched    = 0
+    llm_no_match   = 0
     llm_not_person = 0
 
-    batches = [
-        uncertain_items[i : i + LM_BATCH_SIZE]
-        for i in range(0, len(uncertain_items), LM_BATCH_SIZE)
-    ]
-    idx_batches = [
-        uncertain_idxs[i : i + LM_BATCH_SIZE]
-        for i in range(0, len(uncertain_idxs), LM_BATCH_SIZE)
-    ]
+    batches     = [items[i : i + LM_BATCH_SIZE] for i in range(0, len(items), LM_BATCH_SIZE)]
+    idx_batches = [idxs[i  : i + LM_BATCH_SIZE] for i in range(0, len(idxs),  LM_BATCH_SIZE)]
 
     for batch_items, batch_idxs in tqdm(zip(batches, idx_batches),
                                          total=len(batches), desc="LLM batches"):
@@ -553,29 +477,15 @@ def main():
             else:
                 llm_no_match += 1
 
-    total_matched = confident + llm_matched
     print(f"\nMatching results:")
-    print(f"  Confident (Bioguide): {confident:,}")
-    print(f"  LLM matched:          {llm_matched:,}")
-    print(f"  LLM → not a person:   {llm_not_person:,}")
-    print(f"  Still unmatched:      {llm_no_match:,}")
-    print(f"  Total matched:        {total_matched:,} / {len(us_df):,} "
-          f"({total_matched / len(us_df) * 100:.1f}%)")
+    print(f"  LLM matched:        {llm_matched:,}")
+    print(f"  LLM → not a person: {llm_not_person:,}")
+    print(f"  Still unmatched:    {llm_no_match:,}")
+    print(f"  Total matched:      {llm_matched:,} / {len(us_df):,} "
+          f"({llm_matched / len(us_df) * 100:.1f}%)")
 
-    # -----------------------------------------------------------------------
-    # Pass 3: Enrich gender + birth_year via member detail endpoint
-    # -----------------------------------------------------------------------
     # Refresh mask after LLM may have flipped some is_person
     us_mask_final = (df["source_dataset_type"] == "congressional-record") & (df["is_person"] == "True")
-    matched_ids   = df.loc[us_mask_final & df["bioguide_id"].notna(), "bioguide_id"].unique().tolist()
-    print(f"\nFetching member details for {len(matched_ids):,} matched members...")
-    details = fetch_member_details(matched_ids)
-
-    for idx in df[us_mask_final & df["bioguide_id"].notna()].index:
-        bid = df.at[idx, "bioguide_id"]
-        if bid in details:
-            df.at[idx, "us_gender"]     = details[bid]["gender"]
-            df.at[idx, "us_birth_year"] = details[bid]["birth_year"]
 
     print(f"\nSaving to {SPEAKER_NAMES_FILE}...")
     df.to_csv(SPEAKER_NAMES_FILE, index=False)
@@ -584,14 +494,11 @@ def main():
     # Sample + coverage summary
     enriched = df[us_mask_final & df["bioguide_id"].notna()]
     print(f"\nSample enriched US speakers:")
-    print(enriched[["speaker", "name_cleaned", "us_party", "us_gender",
-                     "us_birth_year", "bioguide_id"]].head(10).to_string(index=False))
+    print(enriched[["speaker", "name_cleaned", "us_party", "bioguide_id"]].head(10).to_string(index=False))
 
     print(f"\nCoverage summary (US persons):")
     print(f"  Total US persons:      {us_mask_final.sum():,}")
     print(f"  Matched (bioguide_id): {df[us_mask_final]['bioguide_id'].notna().sum():,}")
-    print(f"  With gender:           {(df[us_mask_final]['us_gender'].notna() & (df[us_mask_final]['us_gender'] != '')).sum():,}")
-    print(f"  With birth_year:       {df[us_mask_final]['us_birth_year'].notna().sum():,}")
 
 
 if __name__ == "__main__":
