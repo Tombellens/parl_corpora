@@ -42,7 +42,7 @@ CR_CONGRESSES      = list(range(103, 119))
 # LM Studio
 LM_BASE_URL        = "http://localhost:1234/v1"
 LM_MODEL           = "openai/gpt-oss-20b"
-LM_BATCH_SIZE      = 20   # speakers per LLM call
+LM_BATCH_SIZE      = 10   # speakers per LLM call
 LM_MAX_TOKENS      = 8000
 
 # State name → abbreviation
