@@ -28,11 +28,15 @@ from tqdm import tqdm
 # CONFIG
 # ---------------------------------------------------------------------------
 SPEAKER_NAMES_FILE = "/home/tom/data/speaker_names.csv"
-BIOGUIDE_CACHE     = "/home/tom/data/bioguide_members.json"
+BIOGUIDE_CACHE        = "/home/tom/data/bioguide_members.json"
+BIOGUIDE_DETAIL_CACHE = "/home/tom/data/bioguide_details.json"
 API_KEY            = "3jZ9bJYaUr7Ur190xArVeqNMiEH0xWkIZMxdLw3i"
 BASE_URL           = "https://api.congress.gov/v3"
 PAGE_SIZE          = 250
 RATE_LIMIT_DELAY   = 0.1   # seconds between requests
+
+# CR data covers congresses 103 (1993) through 118 (2023)
+CR_CONGRESSES      = list(range(103, 119))
 
 # State name → abbreviation
 STATE_ABBREVS = {
@@ -59,8 +63,40 @@ STATE_ABBREVS = {
 # 1. Fetch all members from Congress.gov API (with caching)
 # ---------------------------------------------------------------------------
 
+def _api_get(url: str, params: dict) -> dict:
+    """GET with retry logic."""
+    for attempt in range(5):
+        try:
+            resp = requests.get(url, params=params, timeout=120)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            print(f"\n  ⚠️  Attempt {attempt+1}/5 failed: {e}. Retrying...")
+            time.sleep(5 * (attempt + 1))
+    raise RuntimeError(f"Failed to fetch {url} after 5 attempts.")
+
+
+def fetch_congress_members(congress: int) -> list[dict]:
+    """Fetch all members for a specific congress number."""
+    members = []
+    offset  = 0
+    url     = f"{BASE_URL}/member/congress/{congress}"
+    while True:
+        data  = _api_get(url, {"api_key": API_KEY, "limit": PAGE_SIZE, "offset": offset})
+        batch = data.get("members", [])
+        if not batch:
+            break
+        members.extend(batch)
+        total = data.get("pagination", {}).get("count", 0)
+        if len(members) >= total:
+            break
+        offset += PAGE_SIZE
+        time.sleep(RATE_LIMIT_DELAY)
+    return members
+
+
 def fetch_all_members() -> list[dict]:
-    """Download all congress members, using a local cache if available."""
+    """Download all congress members for CR congresses, using a local cache if available."""
     if os.path.exists(BIOGUIDE_CACHE):
         print(f"  Loading cached members from {BIOGUIDE_CACHE}...")
         with open(BIOGUIDE_CACHE) as f:
@@ -68,41 +104,21 @@ def fetch_all_members() -> list[dict]:
         print(f"  {len(members):,} members loaded from cache.")
         return members
 
-    print("  Fetching all members from Congress.gov API...")
-    members = []
-    offset  = 0
+    print(f"  Fetching members for congresses {CR_CONGRESSES[0]}–{CR_CONGRESSES[-1]}...")
+    seen_ids = set()
+    members  = []
 
-    while True:
-        for attempt in range(5):
-            try:
-                resp = requests.get(
-                    f"{BASE_URL}/member",
-                    params={"api_key": API_KEY, "limit": PAGE_SIZE, "offset": offset},
-                    timeout=120,
-                )
-                resp.raise_for_status()
-                break
-            except Exception as e:
-                print(f"\n  ⚠️  Attempt {attempt+1}/5 failed: {e}. Retrying...")
-                time.sleep(5 * (attempt + 1))
-        else:
-            raise RuntimeError("Failed to fetch after 5 attempts.")
-        data = resp.json()
-
-        batch = data.get("members", [])
-        if not batch:
-            break
-        members.extend(batch)
-
-        total = data.get("pagination", {}).get("count", 0)
-        print(f"  Fetched {len(members):,} / {total:,}...", end="\r")
-
-        if len(members) >= total:
-            break
-        offset += PAGE_SIZE
+    for congress in CR_CONGRESSES:
+        batch = fetch_congress_members(congress)
+        new   = [m for m in batch if m.get("bioguideId") not in seen_ids]
+        for m in new:
+            seen_ids.add(m.get("bioguideId"))
+        members.extend(new)
+        print(f"  Congress {congress}: {len(batch):,} members "
+              f"({len(new):,} new) → total {len(members):,}")
         time.sleep(RATE_LIMIT_DELAY)
 
-    print(f"\n  Done. {len(members):,} members fetched.")
+    print(f"\n  Done. {len(members):,} unique members fetched.")
 
     # Cache for future runs
     with open(BIOGUIDE_CACHE, "w") as f:
@@ -273,6 +289,52 @@ def match_member(last: str, state: str, min_date: str, max_date: str,
 
 
 # ---------------------------------------------------------------------------
+# 3b. Fetch member details (gender, birth year) — cached
+# ---------------------------------------------------------------------------
+
+def fetch_member_details(bioguide_ids: list[str]) -> dict:
+    """
+    Returns {bioguide_id: {"gender": str, "birth_year": int|None}}
+    Loads/saves a local JSON cache so re-runs are fast.
+    """
+    if os.path.exists(BIOGUIDE_DETAIL_CACHE):
+        with open(BIOGUIDE_DETAIL_CACHE) as f:
+            cache = json.load(f)
+    else:
+        cache = {}
+
+    missing = [bid for bid in bioguide_ids if bid not in cache]
+    if missing:
+        print(f"  Fetching details for {len(missing):,} members (cached: {len(cache):,})...")
+        for i, bid in enumerate(tqdm(missing, desc="Details")):
+            try:
+                data   = _api_get(f"{BASE_URL}/member/{bid}", {"api_key": API_KEY})
+                member = data.get("member", {})
+                # gender: under depiction or directly
+                gender     = member.get("gender", "")
+                # birth year: birthYear field or from birthDate
+                birth_year = member.get("birthYear") or member.get("birthDate", "")[:4] or None
+                if birth_year:
+                    try:
+                        birth_year = int(str(birth_year)[:4])
+                    except (ValueError, TypeError):
+                        birth_year = None
+                cache[bid] = {"gender": gender, "birth_year": birth_year}
+            except Exception as e:
+                print(f"\n  ⚠️  Could not fetch details for {bid}: {e}")
+                cache[bid] = {"gender": "", "birth_year": None}
+            time.sleep(RATE_LIMIT_DELAY)
+
+        with open(BIOGUIDE_DETAIL_CACHE, "w") as f:
+            json.dump(cache, f)
+        print(f"  Details cached to {BIOGUIDE_DETAIL_CACHE}")
+    else:
+        print(f"  All {len(bioguide_ids):,} member details already cached.")
+
+    return cache
+
+
+# ---------------------------------------------------------------------------
 # 4. Main
 # ---------------------------------------------------------------------------
 
@@ -325,6 +387,19 @@ def main():
     print(f"  Matched:   {matched:,}")
     print(f"  Unmatched: {unmatched:,}")
 
+    # -----------------------------------------------------------------------
+    # 5. Enrich gender + birth_year via member detail endpoint
+    # -----------------------------------------------------------------------
+    matched_ids = df.loc[us_mask & df["bioguide_id"].notna(), "bioguide_id"].unique().tolist()
+    print(f"\nFetching member details for {len(matched_ids):,} matched members...")
+    details = fetch_member_details(matched_ids)
+
+    for idx in df[us_mask & df["bioguide_id"].notna()].index:
+        bid = df.at[idx, "bioguide_id"]
+        if bid in details:
+            df.at[idx, "us_gender"]     = details[bid]["gender"]
+            df.at[idx, "us_birth_year"] = details[bid]["birth_year"]
+
     print(f"\nSaving to {SPEAKER_NAMES_FILE}...")
     df.to_csv(SPEAKER_NAMES_FILE, index=False)
     print("Done!")
@@ -332,7 +407,15 @@ def main():
     # Sample
     enriched = df[us_mask & df["bioguide_id"].notna()]
     print(f"\nSample enriched US speakers:")
-    print(enriched[["speaker", "name_cleaned", "us_party", "bioguide_id"]].head(10).to_string(index=False))
+    print(enriched[["speaker", "name_cleaned", "us_party", "us_gender",
+                     "us_birth_year", "bioguide_id"]].head(10).to_string(index=False))
+
+    # Coverage summary
+    print(f"\nCoverage summary (US persons):")
+    print(f"  Total US persons:      {us_mask.sum():,}")
+    print(f"  Matched (bioguide_id): {df[us_mask]['bioguide_id'].notna().sum():,}")
+    print(f"  With gender:           {(df[us_mask]['us_gender'].notna() & (df[us_mask]['us_gender'] != '')).sum():,}")
+    print(f"  With birth_year:       {df[us_mask]['us_birth_year'].notna().sum():,}")
 
 
 if __name__ == "__main__":
