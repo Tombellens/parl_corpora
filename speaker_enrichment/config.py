@@ -54,7 +54,7 @@ MODEL_ANNOTATE_C     = "openai/gpt-oss-20b"   # group C
 MODEL_ANNOTATE_D     = "openai/gpt-oss-20b"   # group D
 
 # Prompt versions — bump when you change prompts to keep the DB traceable
-PROMPT_VERSION_SYNTHESIZE_URL = "1.0"
+PROMPT_VERSION_SYNTHESIZE_URL = "1.1"
 PROMPT_VERSION_SYNTHESIZE_CV  = "1.0"
 PROMPT_VERSION_ANNOTATE_A     = "1.0"
 PROMPT_VERSION_ANNOTATE_B     = "1.0"

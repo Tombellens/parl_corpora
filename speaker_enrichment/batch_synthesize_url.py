@@ -38,8 +38,22 @@ from llm_client import (
 SYSTEM_PROMPT = """You are a research assistant extracting biographical information
 about politicians from web pages for a scientific study.
 
-Given the cleaned text of a web page, write a concise factual summary
-containing ALL of the following elements IF present in the text:
+STEP 1 — RELEVANCE CHECK
+Before doing anything else, decide: is this page primarily about the person
+named in the "Person:" field? A page is relevant if it is clearly a biography,
+profile, or article whose main subject is that specific individual.
+
+A page is NOT relevant if:
+- It is primarily about a different person who shares the same name
+- The person is only mentioned in passing (e.g. in a list, a quote, a footnote)
+- It is a search results page, directory listing, or disambiguation page
+- It is about an organisation, event, or topic and the person is incidental
+
+If the page is NOT relevant, respond with exactly one word: IRRELEVANT
+
+STEP 2 — BIOGRAPHICAL SUMMARY (only if relevant)
+Write a concise factual summary containing ALL of the following elements
+IF present in the text:
 
 - Full name and any alternative spellings
 - Gender
@@ -55,7 +69,10 @@ Do NOT output JSON. Output only the prose summary."""
 
 
 def synthesize_url(url_row: dict, speaker_name: str) -> str:
-    """Call the LLM to synthesize one URL's cleaned text."""
+    """
+    Call the LLM to synthesize one URL's cleaned text.
+    Returns empty string if the LLM judges the page irrelevant to the speaker.
+    """
     cleaned = url_row["cleaned_text"] or ""
     if not cleaned.strip():
         return ""
@@ -64,10 +81,10 @@ def synthesize_url(url_row: dict, speaker_name: str) -> str:
         f"Person: {speaker_name}\n"
         f"Source URL: {url_row['url']}\n\n"
         f"--- PAGE TEXT ---\n{cleaned}\n--- END ---\n\n"
-        "Write the biographical summary:"
+        "First check relevance, then write the biographical summary if relevant:"
     )
 
-    return chat(
+    response = chat(
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user",   "content": user_msg},
@@ -75,6 +92,11 @@ def synthesize_url(url_row: dict, speaker_name: str) -> str:
         model=config.MODEL_SYNTHESIZE_URL,
         max_tokens=1024,
     )
+
+    # Treat IRRELEVANT responses as empty (will be marked SKIPPED)
+    if response.strip().upper().startswith("IRRELEVANT"):
+        return ""
+    return response
 
 
 def process_speaker(conn, speaker: dict) -> tuple[int, int]:
