@@ -73,12 +73,20 @@ def fetch_all_members() -> list[dict]:
     offset  = 0
 
     while True:
-        resp = requests.get(
-            f"{BASE_URL}/member",
-            params={"api_key": API_KEY, "limit": PAGE_SIZE, "offset": offset},
-            timeout=30,
-        )
-        resp.raise_for_status()
+        for attempt in range(5):
+            try:
+                resp = requests.get(
+                    f"{BASE_URL}/member",
+                    params={"api_key": API_KEY, "limit": PAGE_SIZE, "offset": offset},
+                    timeout=120,
+                )
+                resp.raise_for_status()
+                break
+            except Exception as e:
+                print(f"\n  ⚠️  Attempt {attempt+1}/5 failed: {e}. Retrying...")
+                time.sleep(5 * (attempt + 1))
+        else:
+            raise RuntimeError("Failed to fetch after 5 attempts.")
         data = resp.json()
 
         batch = data.get("members", [])
