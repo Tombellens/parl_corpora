@@ -122,11 +122,18 @@ def decide(dry_run: bool = False, force_stage: str | None = None) -> None:
         launch(force_stage, dry_run)
         return
 
-    # Always launch non-LLM stages if they have work
+    # Launch non-LLM stages only if not already running
     for stage in ("query", "fetch"):
         if ready[stage] > 0:
-            print(f"\nNon-LLM stage '{stage}' has {ready[stage]} pending → launching")
-            launch(stage, dry_run)
+            already_running = subprocess.run(
+                ["pgrep", "-f", STAGE_SCRIPT[stage]],
+                capture_output=True,
+            ).returncode == 0
+            if already_running:
+                print(f"\nNon-LLM stage '{stage}' already running — skipping")
+            else:
+                print(f"\nNon-LLM stage '{stage}' has {ready[stage]} pending → launching")
+                launch(stage, dry_run)
 
     # For LLM stages: check lock first
     if is_llm_locked():
