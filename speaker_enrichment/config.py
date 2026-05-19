@@ -45,6 +45,9 @@ LM_STUDIO_API_KEY  = "lm-studio"
 LMS_BIN            = os.path.expanduser("~/.lmstudio/bin/lms")
 LMS_SERVER_STARTUP_TIMEOUT = 60   # seconds to wait for server to come up
 
+# LLM context window — 32k fits ~40k chars of text + system prompt + output
+LLM_CONTEXT_LENGTH = 65_536
+
 # Models — fill in once you decide; these are placeholders
 MODEL_SYNTHESIZE_URL = "openai/gpt-oss-20b"   # per-URL synthesis
 MODEL_SYNTHESIZE_CV  = "openai/gpt-oss-20b"   # CV merger
@@ -72,7 +75,7 @@ BATCH_SIZE_ANNOTATE       = 100    # persons annotated per LLM run (all groups)
 
 # Web fetching
 FETCH_TIMEOUT_SECONDS = 20
-MAX_CLEANED_TEXT_CHARS = 60_000    # truncation ceiling fed to the LLM
+MAX_CLEANED_TEXT_CHARS = 80_000    # truncation ceiling fed to the LLM
 
 # Dashboard
 DASHBOARD_PORT = 5050

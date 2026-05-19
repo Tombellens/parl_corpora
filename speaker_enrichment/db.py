@@ -222,7 +222,7 @@ def get_conn(db_path: str | None = None):
     if db_path is None:
         import config as _cfg
         db_path = _cfg.DB_PATH
-    conn = sqlite3.connect(db_path, timeout=30)
+    conn = sqlite3.connect(db_path, timeout=300)
     conn.row_factory = sqlite3.Row
     try:
         yield conn

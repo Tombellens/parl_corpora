@@ -98,7 +98,7 @@ def main():
     try:
         acquire_llm_lock(f"annotate_{GROUP}", config.MODEL_ANNOTATE_B)
         print(f"Loading model {config.MODEL_ANNOTATE_B}...")
-        _loaded_instance = load_model(config.MODEL_ANNOTATE_B).get("instance_id")
+        _loaded_instance = load_model(config.MODEL_ANNOTATE_B, context_length=config.LLM_CONTEXT_LENGTH).get("instance_id")
 
         with get_conn() as conn:
             conn.execute(

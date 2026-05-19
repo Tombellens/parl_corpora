@@ -185,7 +185,7 @@ def main():
     try:
         acquire_llm_lock("synthesize_url", config.MODEL_SYNTHESIZE_URL)
         print(f"Loading model {config.MODEL_SYNTHESIZE_URL}...")
-        _loaded_instance = load_model(config.MODEL_SYNTHESIZE_URL).get("instance_id")
+        _loaded_instance = load_model(config.MODEL_SYNTHESIZE_URL, context_length=config.LLM_CONTEXT_LENGTH).get("instance_id")
         with get_conn() as conn:
             conn.execute(
                 "INSERT INTO batch_runs (run_id, stage, batch_type, started_at) VALUES (?,?,?,?)",
