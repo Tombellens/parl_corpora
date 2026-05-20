@@ -122,18 +122,29 @@ def decide(dry_run: bool = False, force_stage: str | None = None) -> None:
         launch(force_stage, dry_run)
         return
 
-    # Launch non-LLM stages only if not already running
-    for stage in ("query", "fetch"):
-        if ready[stage] > 0:
-            already_running = subprocess.run(
-                ["pgrep", "-f", STAGE_SCRIPT[stage]],
-                capture_output=True,
-            ).returncode == 0
-            if already_running:
-                print(f"\nNon-LLM stage '{stage}' already running — skipping")
-            else:
-                print(f"\nNon-LLM stage '{stage}' has {ready[stage]} pending → launching")
-                launch(stage, dry_run)
+    def _is_running(stage: str) -> bool:
+        return subprocess.run(
+            ["pgrep", "-f", STAGE_SCRIPT[stage]],
+            capture_output=True,
+        ).returncode == 0
+
+    # Query runs exclusively — no fetch or LLM while query has pending work
+    # or is actively running. This prevents DB contention that wastes API credits.
+    if ready["query"] > 0 or _is_running("query"):
+        if _is_running("query"):
+            print("\nQuery already running — waiting for it to finish before launching other stages")
+        else:
+            print(f"\nQuery has {ready['query']} pending — running exclusively")
+            launch("query", dry_run)
+        return
+
+    # Query is done — now run fetch (if not already running)
+    if ready["fetch"] > 0:
+        if _is_running("fetch"):
+            print("\nFetch already running — skipping")
+        else:
+            print(f"\nFetch has {ready['fetch']} pending → launching")
+            launch("fetch", dry_run)
 
     # For LLM stages: check lock first
     if is_llm_locked():

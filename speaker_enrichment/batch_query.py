@@ -147,18 +147,42 @@ def build_queries(name: str, country: str) -> list[tuple[str, str]]:
 # Per-speaker processing
 # ---------------------------------------------------------------------------
 
-def process_speaker(conn, speaker: dict, run_id: str) -> bool:
+def _db_write_with_retry(fn, max_attempts: int = 10, base_delay: float = 1.0):
+    """
+    Call fn() (which must open its own get_conn() internally) with
+    exponential backoff on OperationalError (DB locked).
+    Raises on final failure.
+    """
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except Exception as e:
+            if "database is locked" in str(e) and attempt < max_attempts - 1:
+                delay = base_delay * (2 ** attempt)
+                tqdm.write(f"  DB locked, retrying in {delay:.1f}s (attempt {attempt+1}/{max_attempts})")
+                time.sleep(delay)
+            else:
+                raise
+
+
+def process_speaker(speaker: dict, run_id: str) -> bool:
     """
     Query Brave for this speaker, insert URL rows.
+    Each URL is committed in its own transaction immediately after the
+    Brave call — so a DB lock can never cause a paid API call to go
+    unrecorded.
     Returns True on success, False on failure.
     """
-    sid   = speaker["speaker_id"]
-    name  = speaker["name_cleaned"] or ""
+    sid     = speaker["speaker_id"]
+    name    = speaker["name_cleaned"] or ""
     country = speaker["country"] or "GB"
 
     if not name.strip():
-        set_speaker_status(conn, sid, "query", "skipped",
-                           error="empty name_cleaned")
+        def _skip():
+            with get_conn() as conn:
+                set_speaker_status(conn, sid, "query", "skipped",
+                                   error="empty name_cleaned")
+        _db_write_with_retry(_skip)
         return True
 
     queries = build_queries(name, country)
@@ -177,16 +201,23 @@ def process_speaker(conn, speaker: dict, run_id: str) -> bool:
             if _is_blacklisted(url):
                 continue
             seen_urls.add(url)
-            upsert_speaker_url(
-                conn, sid, url,
+            # Commit each URL immediately in its own transaction
+            _url_data = dict(
                 query_language=lang,
                 query_string=q_string,
                 search_rank=rank,
                 discovered_at=discovered_at,
             )
+            def _save_url(sid=sid, url=url, data=_url_data):
+                with get_conn() as conn:
+                    upsert_speaker_url(conn, sid, url, **data)
+            _db_write_with_retry(_save_url)
             total_urls += 1
 
-    set_speaker_status(conn, sid, "query", SUCCESS, query_n_urls=total_urls)
+    def _mark_success():
+        with get_conn() as conn:
+            set_speaker_status(conn, sid, "query", SUCCESS, query_n_urls=total_urls)
+    _db_write_with_retry(_mark_success)
     return True
 
 
@@ -234,8 +265,7 @@ def main():
             set_speaker_status(conn, sid, "query", "running")
 
         try:
-            with get_conn() as conn:
-                ok = process_speaker(conn, speaker, run_id)
+            ok = process_speaker(speaker, run_id)
             if ok:
                 n_success += 1
             else:
