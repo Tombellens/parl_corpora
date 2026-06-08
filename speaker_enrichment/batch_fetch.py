@@ -42,12 +42,14 @@ def fetch_url_row(conn, url_row: dict, ua_index: int = 0) -> bool:
 
     result = fetch_and_clean(url, ua_index=ua_index, store_raw=True)
 
-    if result.error:
+    if result is None or result.error:
+        error_msg = "fetch_and_clean returned None" if result is None else result.error[:500]
+        http_status = None if result is None else result.http_status
         conn.execute(
             """UPDATE speaker_urls
                SET fetch_status=?, fetch_error=?, fetch_at=?, fetch_http_status=?
                WHERE id=?""",
-            (FAILED, result.error[:500], now_iso(), result.http_status, url_id),
+            (FAILED, error_msg, now_iso(), http_status, url_id),
         )
         return False
 
