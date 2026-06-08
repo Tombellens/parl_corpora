@@ -151,8 +151,10 @@ def load_model(model_id: str, context_length: int = 16384,
 
     payload = {
         "model": model_id,
-        "context_length": context_length,
-        "flash_attention": flash_attention,
+        "config": {
+            "contextLength": context_length,
+            "flashAttention": flash_attention,
+        },
         "echo_load_config": True,
         **kwargs,
     }
