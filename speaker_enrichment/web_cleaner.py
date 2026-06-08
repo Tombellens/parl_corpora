@@ -259,17 +259,25 @@ def fetch_and_clean(url: str, ua_index: int = 0,
 
     # ---- 3. Extract clean text ----
     # Try trafilatura first (best at article bodies)
-    cleaned = trafilatura.extract(
-        html,
-        include_comments=False,
-        include_tables=True,
-        no_fallback=False,
-        favor_recall=True,   # we want more coverage, not less
-    )
+    try:
+        cleaned = trafilatura.extract(
+            html,
+            include_comments=False,
+            include_tables=True,
+            no_fallback=False,
+            favor_recall=True,   # we want more coverage, not less
+        )
+    except Exception as e:
+        result.error = f"trafilatura_error: {type(e).__name__}"
+        return result
 
     if not cleaned or len(cleaned.strip()) < 100:
         # Fall back to BS4
-        cleaned = _bs_extract(html)
+        try:
+            cleaned = _bs_extract(html)
+        except Exception as e:
+            result.error = f"bs4_error: {type(e).__name__}"
+            return result
 
     if not cleaned or len(cleaned.strip()) < 20:
         result.error = "no_text_extracted"
