@@ -81,9 +81,6 @@ def process_speaker(conn, speaker: dict) -> tuple[int, int]:
         (sid, PENDING),
     ).fetchall()
 
-    if not pending_urls:
-        return 0, 0
-
     n_success = n_failed = 0
     for i, url_row in enumerate(pending_urls):
         ok = fetch_url_row(conn, url_row, ua_index=i)
@@ -93,6 +90,9 @@ def process_speaker(conn, speaker: dict) -> tuple[int, int]:
             n_failed += 1
 
     # Update speaker-level aggregate
+    # NOTE: this runs even when pending_urls was empty, so a speaker whose
+    # URLs were all fetched in a prior run still gets a final status set
+    # (otherwise it would be stuck in 'running' forever).
     total_success = conn.execute(
         "SELECT COUNT(*) FROM speaker_urls WHERE speaker_id=? AND fetch_status='success'",
         (sid,),
