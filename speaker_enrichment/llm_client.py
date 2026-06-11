@@ -157,13 +157,13 @@ def load_model(model_id: str, context_length: int = 16384,
             "Start it with: lms server start"
         )
 
+    # NOTE: this LM Studio build expects FLAT snake_case keys at the top level
+    # (a nested "config" object is rejected with "Unrecognized key(s): config").
     payload = {
         "model": model_id,
-        "config": {
-            "contextLength": context_length,
-            "flashAttention": flash_attention,
-            "numParallel": num_parallel,
-        },
+        "context_length": context_length,
+        "flash_attention": flash_attention,
+        "parallel": num_parallel,
         "echo_load_config": True,
         **kwargs,
     }
