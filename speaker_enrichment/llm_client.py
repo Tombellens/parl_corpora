@@ -140,6 +140,11 @@ def _lms_bin() -> str:
     return LMS_BIN if Path(LMS_BIN).exists() else "lms"
 
 
+# Remembers the most recent load so chat() can reload the model after a
+# runtime crash (after which /v1 would otherwise JIT a 4096 default instance).
+_LAST_LOAD: dict | None = None
+
+
 def unload_all_instances() -> None:
     """
     Unload every loaded instance via the lms CLI. Guarantees a clean slate so
@@ -203,7 +208,31 @@ def load_model(model_id: str, context_length: int = 16384,
         )
     print(f"  Loaded {model_id} in {elapsed:.1f}s "
           f"(ctx={context_length}, parallel={num_parallel}) via lms CLI")
+
+    global _LAST_LOAD
+    _LAST_LOAD = {
+        "model_id": model_id,
+        "context_length": context_length,
+        "num_parallel": num_parallel,
+    }
     return {"instance_id": model_id, "load_time_seconds": elapsed}
+
+
+def reload_last_model() -> bool:
+    """Reload the most recently loaded model with the same config. Used to
+    recover after a runtime crash. Returns True on success."""
+    if not _LAST_LOAD:
+        return False
+    try:
+        load_model(
+            _LAST_LOAD["model_id"],
+            context_length=_LAST_LOAD["context_length"],
+            num_parallel=_LAST_LOAD["num_parallel"],
+        )
+        return True
+    except Exception as e:
+        print(f"  Reload failed: {e}")
+        return False
 
 
 def unload_model(instance_id: str) -> dict:
@@ -239,14 +268,34 @@ def _client() -> OpenAI:
     return OpenAI(base_url=f"{LM_STUDIO_BASE_URL}/v1", api_key=LM_STUDIO_API_KEY)
 
 
+def _is_crash_or_fallback(err: str) -> bool:
+    """
+    True if the error indicates the runtime crashed, or that requests are being
+    served by a JIT-spawned default (4096) instance instead of our loaded one.
+    Both are recovered by reloading the model.
+    """
+    e = err.lower()
+    return (
+        "has crashed" in e
+        or "exit code" in e
+        or "n_ctx: 4096" in e
+        or "no models loaded" in e
+        or "model_not_found" in e
+    )
+
+
 def chat(messages: list[dict], model: str, temperature: float = 0,
-         max_tokens: int = 4096, **kwargs) -> str:
+         max_tokens: int = 4096, max_attempts: int = 4, **kwargs) -> str:
     """
     Send a chat completion request and return the raw response string.
-    Retries up to 3 times on transient errors.
+
+    Retries transient errors. If the runtime crashes — or requests start
+    hitting a JIT-spawned 4096-context instance — the model is reloaded with
+    its last config before retrying, so one crash does not cascade into every
+    subsequent request failing at n_ctx 4096.
     """
     client = _client()
-    for attempt in range(3):
+    for attempt in range(max_attempts):
         try:
             resp = client.chat.completions.create(
                 model=model,
@@ -257,10 +306,18 @@ def chat(messages: list[dict], model: str, temperature: float = 0,
             )
             return resp.choices[0].message.content.strip()
         except Exception as e:
-            if attempt == 2:
+            if attempt == max_attempts - 1:
                 raise
-            print(f"  LLM call failed (attempt {attempt+1}/3): {e}  — retrying in 5s")
-            time.sleep(5)
+            err = str(e)
+            if _is_crash_or_fallback(err):
+                print(f"  LLM crash/fallback detected (attempt {attempt+1}/{max_attempts}) "
+                      f"— reloading model: {err[:120]}")
+                time.sleep(3)
+                reload_last_model()
+                time.sleep(2)
+            else:
+                print(f"  LLM call failed (attempt {attempt+1}/{max_attempts}): {e} — retrying in 5s")
+                time.sleep(5)
 
 
 def extract_json(response: str) -> dict | list:
