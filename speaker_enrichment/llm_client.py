@@ -136,99 +136,88 @@ def get_loaded_models() -> list[dict]:
     return [m for m in models if m.get("loaded_instances")]
 
 
+def _lms_bin() -> str:
+    return LMS_BIN if Path(LMS_BIN).exists() else "lms"
+
+
 def unload_all_instances() -> None:
     """
-    Unload every loaded instance of every model. Used to guarantee a clean
-    slate before loading, so chat requests cannot be misrouted to a stale or
-    JIT-spawned default-context (4096) instance.
+    Unload every loaded instance via the lms CLI. Guarantees a clean slate so
+    chat requests cannot be misrouted to a stale or JIT-spawned default-context
+    (4096) instance.
     """
     try:
-        for m in list_models():
-            for inst in (m.get("loaded_instances") or []):
-                iid = inst.get("id")
-                if not iid:
-                    continue
-                try:
-                    requests.post(
-                        f"{LM_STUDIO_BASE_URL}/api/v1/models/unload",
-                        headers=_headers(),
-                        json={"instance_id": iid},
-                        timeout=60,
-                    )
-                    print(f"  Unloaded stale instance {iid}")
-                except Exception as e:
-                    print(f"  Warning: could not unload {iid}: {e}")
+        subprocess.run(
+            [_lms_bin(), "unload", "--all"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, timeout=60,
+        )
     except Exception as e:
-        print(f"  Warning: could not enumerate instances to unload: {e}")
+        print(f"  Warning: 'lms unload --all' failed: {e}")
 
 
 def load_model(model_id: str, context_length: int = 16384,
                flash_attention: bool = True, num_parallel: int = 1,
                **kwargs) -> dict:
     """
-    Ask LM Studio to load a model into GPU memory.
-    Returns the response dict (includes instance_id and load_time_seconds).
-    Raises RuntimeError if the LM Studio server is not running.
+    Load a model into GPU memory via the `lms` CLI and return
+    {"instance_id": ..., "load_time_seconds": ...}.
 
-    Unloads ALL existing instances first so there is exactly one instance
-    serving requests — with multiple instances loaded, LM Studio can route a
-    chat completion to a stale/default 4096-context instance, causing
-    'n_ctx: 4096' overflow errors even though we asked for 65536.
+    IMPORTANT — why the CLI, not the REST API:
+    Loading via POST /api/v1/models/load creates an instance that the
+    OpenAI-compatible /v1/chat/completions endpoint does NOT use: with JIT
+    loading, /v1 spins up its own default-context (4096) instance, producing
+    'n_ctx: 4096' overflow errors even though the API instance was 65536.
+    `lms load` registers the instance correctly so /v1 serves at the requested
+    context. Verified: lms-loaded 65536 instance serves a ~25k-token prompt
+    with HTTP 200, whereas an API-loaded one 400s at n_ctx 4096.
 
-    num_parallel: number of concurrent sequence slots. LM Studio divides the
-    KV-cache context_length across these slots, so each in-flight request only
-    gets context_length / num_parallel tokens. Our pipeline issues requests
-    sequentially, so we default to 1 to give every request the FULL context
-    (with parallel=4 a 65536 context yields only 16384 tokens per request,
-    which is what caused the earlier 'n_ctx: 16384' overflow errors).
+    num_parallel: concurrent sequence slots. LM Studio divides context_length
+    across these slots (parallel=4 -> each request only gets context/4), so we
+    default to 1 to give every sequential request the FULL context.
     """
     if not is_lm_studio_running():
         raise RuntimeError(
-            "LM Studio server is not running. "
-            "Start it with: lms server start"
+            "LM Studio server is not running. Start it with: lms server start"
         )
 
-    # Clean slate: ensure no other (possibly default-context) instance can
-    # serve requests alongside the one we are about to load.
+    # Clean slate so exactly one instance (ours) serves requests.
     unload_all_instances()
 
-    # NOTE: this LM Studio build expects FLAT snake_case keys at the top level
-    # (a nested "config" object is rejected with "Unrecognized key(s): config").
-    payload = {
-        "model": model_id,
-        "context_length": context_length,
-        "flash_attention": flash_attention,
-        "parallel": num_parallel,
-        "echo_load_config": True,
-        **kwargs,
-    }
-    r = requests.post(
-        f"{LM_STUDIO_BASE_URL}/api/v1/models/load",
-        headers=_headers(),
-        json=payload,
-        timeout=300,   # loading can take a while
+    cmd = [
+        _lms_bin(), "load", model_id,
+        "-c", str(context_length),
+        "--parallel", str(num_parallel),
+        "--gpu", "max",
+        "-y",
+    ]
+    t0 = time.time()
+    result = subprocess.run(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, timeout=300,
     )
-    r.raise_for_status()
-    result = r.json()
-    print(f"  Loaded {model_id} in {result.get('load_time_seconds', '?'):.1f}s  "
-          f"(instance: {result.get('instance_id', '?')})")
-    return result
+    elapsed = time.time() - t0
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"lms load failed (exit {result.returncode}):\n{result.stdout}"
+        )
+    print(f"  Loaded {model_id} in {elapsed:.1f}s "
+          f"(ctx={context_length}, parallel={num_parallel}) via lms CLI")
+    return {"instance_id": model_id, "load_time_seconds": elapsed}
 
 
 def unload_model(instance_id: str) -> dict:
-    """
-    Unload a model instance from GPU memory.
-    `instance_id` is the model identifier (same as model_id in most cases).
-    """
-    r = requests.post(
-        f"{LM_STUDIO_BASE_URL}/api/v1/models/unload",
-        headers=_headers(),
-        json={"instance_id": instance_id},
-        timeout=60,
+    """Unload a model instance from GPU memory via the lms CLI."""
+    result = subprocess.run(
+        [_lms_bin(), "unload", instance_id],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, timeout=60,
     )
-    r.raise_for_status()
-    print(f"  Unloaded {instance_id}")
-    return r.json()
+    if result.returncode != 0:
+        print(f"  Warning: lms unload {instance_id} exited {result.returncode}: {result.stdout}")
+    else:
+        print(f"  Unloaded {instance_id}")
+    return {"instance_id": instance_id, "returncode": result.returncode}
 
 
 def unload_all_models() -> None:
