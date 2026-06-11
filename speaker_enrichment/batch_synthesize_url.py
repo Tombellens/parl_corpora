@@ -355,7 +355,32 @@ def main():
                 (now_iso(), len(speakers), n_success, n_failed, run_id),
             )
 
-        print(f"\nDone.  success={n_success}  failed={n_failed}")
+        # Honest summary: report ACTUAL synthesis outcomes from the DB for the
+        # speakers in this run, not just "speaker processed without exception".
+        speaker_ids = [s["speaker_id"] for s in speakers]
+        if speaker_ids:
+            with get_conn() as conn:
+                ph = ",".join("?" * len(speaker_ids))
+                url_rows = conn.execute(
+                    f"""SELECT synthesis_status, COUNT(*)
+                        FROM speaker_urls
+                        WHERE speaker_id IN ({ph})
+                        GROUP BY synthesis_status""",
+                    speaker_ids,
+                ).fetchall()
+                spk_rows = conn.execute(
+                    f"""SELECT url_synth_status, COUNT(*)
+                        FROM speakers WHERE speaker_id IN ({ph})
+                        GROUP BY url_synth_status""",
+                    speaker_ids,
+                ).fetchall()
+            url_counts = {r[0]: r[1] for r in url_rows}
+            spk_counts = {r[0]: r[1] for r in spk_rows}
+            print(f"\nDone.  speakers processed={n_success}  finalise-errors={n_failed}")
+            print(f"  URL synthesis: " + "  ".join(f"{k}={v}" for k, v in sorted(url_counts.items())))
+            print(f"  Speaker status: " + "  ".join(f"{k}={v}" for k, v in sorted(spk_counts.items())))
+        else:
+            print(f"\nDone.  nothing to process.")
 
     finally:
         if _loaded_instance:
