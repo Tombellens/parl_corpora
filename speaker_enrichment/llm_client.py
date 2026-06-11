@@ -136,6 +136,32 @@ def get_loaded_models() -> list[dict]:
     return [m for m in models if m.get("loaded_instances")]
 
 
+def unload_all_instances() -> None:
+    """
+    Unload every loaded instance of every model. Used to guarantee a clean
+    slate before loading, so chat requests cannot be misrouted to a stale or
+    JIT-spawned default-context (4096) instance.
+    """
+    try:
+        for m in list_models():
+            for inst in (m.get("loaded_instances") or []):
+                iid = inst.get("id")
+                if not iid:
+                    continue
+                try:
+                    requests.post(
+                        f"{LM_STUDIO_BASE_URL}/api/v1/models/unload",
+                        headers=_headers(),
+                        json={"instance_id": iid},
+                        timeout=60,
+                    )
+                    print(f"  Unloaded stale instance {iid}")
+                except Exception as e:
+                    print(f"  Warning: could not unload {iid}: {e}")
+    except Exception as e:
+        print(f"  Warning: could not enumerate instances to unload: {e}")
+
+
 def load_model(model_id: str, context_length: int = 16384,
                flash_attention: bool = True, num_parallel: int = 1,
                **kwargs) -> dict:
@@ -143,6 +169,11 @@ def load_model(model_id: str, context_length: int = 16384,
     Ask LM Studio to load a model into GPU memory.
     Returns the response dict (includes instance_id and load_time_seconds).
     Raises RuntimeError if the LM Studio server is not running.
+
+    Unloads ALL existing instances first so there is exactly one instance
+    serving requests — with multiple instances loaded, LM Studio can route a
+    chat completion to a stale/default 4096-context instance, causing
+    'n_ctx: 4096' overflow errors even though we asked for 65536.
 
     num_parallel: number of concurrent sequence slots. LM Studio divides the
     KV-cache context_length across these slots, so each in-flight request only
@@ -156,6 +187,10 @@ def load_model(model_id: str, context_length: int = 16384,
             "LM Studio server is not running. "
             "Start it with: lms server start"
         )
+
+    # Clean slate: ensure no other (possibly default-context) instance can
+    # serve requests alongside the one we are about to load.
+    unload_all_instances()
 
     # NOTE: this LM Studio build expects FLAT snake_case keys at the top level
     # (a nested "config" object is rejected with "Unrecognized key(s): config").
