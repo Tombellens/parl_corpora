@@ -137,11 +137,19 @@ def get_loaded_models() -> list[dict]:
 
 
 def load_model(model_id: str, context_length: int = 16384,
-               flash_attention: bool = True, **kwargs) -> dict:
+               flash_attention: bool = True, num_parallel: int = 1,
+               **kwargs) -> dict:
     """
     Ask LM Studio to load a model into GPU memory.
     Returns the response dict (includes instance_id and load_time_seconds).
     Raises RuntimeError if the LM Studio server is not running.
+
+    num_parallel: number of concurrent sequence slots. LM Studio divides the
+    KV-cache context_length across these slots, so each in-flight request only
+    gets context_length / num_parallel tokens. Our pipeline issues requests
+    sequentially, so we default to 1 to give every request the FULL context
+    (with parallel=4 a 65536 context yields only 16384 tokens per request,
+    which is what caused the earlier 'n_ctx: 16384' overflow errors).
     """
     if not is_lm_studio_running():
         raise RuntimeError(
@@ -154,6 +162,7 @@ def load_model(model_id: str, context_length: int = 16384,
         "config": {
             "contextLength": context_length,
             "flashAttention": flash_attention,
+            "numParallel": num_parallel,
         },
         "echo_load_config": True,
         **kwargs,
