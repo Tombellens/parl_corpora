@@ -19,6 +19,7 @@ Usage:
 """
 
 import argparse
+import time
 import uuid
 from pathlib import Path
 
@@ -39,6 +40,34 @@ from llm_client import (
 )
 
 
+# ---------------------------------------------------------------------------
+# Context-length budgeting (same approach as batch_synthesize_url)
+# ---------------------------------------------------------------------------
+_OUTPUT_TOKENS_RESERVED = 2048
+_PROMPT_OVERHEAD_TOKENS = 1200
+_BYTES_PER_TOKEN        = 3.0
+_MAX_INPUT_TOKENS       = 28000   # stay well below context for runtime stability
+
+
+def _max_input_bytes() -> int:
+    ctx_token_budget = (
+        config.LLM_CONTEXT_LENGTH - _OUTPUT_TOKENS_RESERVED - _PROMPT_OVERHEAD_TOKENS
+    )
+    return max(0, int(min(_MAX_INPUT_TOKENS, ctx_token_budget) * _BYTES_PER_TOKEN))
+
+
+def _db_write_with_retry(fn, max_attempts: int = 10, base_delay: float = 1.0):
+    """Run fn() (opens its own get_conn) with exponential backoff on DB lock."""
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except Exception as e:
+            if "database is locked" in str(e) and attempt < max_attempts - 1:
+                time.sleep(base_delay * (2 ** attempt))
+            else:
+                raise
+
+
 SYSTEM_PROMPT = """You are a research assistant compiling a politician's biography
 for a scientific study on parliamentary speech.
 
@@ -57,62 +86,96 @@ Rules:
 - Do NOT use bullet points or headers — flowing prose only"""
 
 
-def build_merge_prompt(name: str, snippets: list[dict]) -> str:
-    parts = [f"Person: {name}\n\nBiographical snippets from {len(snippets)} web sources:\n"]
+def build_merge_prompt(name: str, snippets: list[dict]) -> tuple[str, list[int], int]:
+    """
+    Build the merge prompt, including snippets in rank order until the input
+    byte budget is reached. Returns (prompt, used_url_ids, n_dropped).
+    Snippets arrive ordered by search_rank (best first), so if we must drop
+    any to fit the context, we drop the lowest-ranked.
+    """
+    budget = _max_input_bytes()
+    header = f"Person: {name}\n\nBiographical snippets from web sources:\n"
+    parts = [header]
+    used_ids: list[int] = []
+    running = len(header.encode("utf-8"))
+    n_dropped = 0
+
     for i, s in enumerate(snippets, start=1):
-        url  = s["url"]
         lang = s["query_language"] or "?"
         text = (s["synthesis_text"] or "").strip()
-        parts.append(f"--- Source {i} (lang={lang}, rank={s['search_rank']}) ---")
-        parts.append(f"URL: {url}")
-        parts.append(text)
-        parts.append("")
-    parts.append("Write the merged biographical CV:")
-    return "\n".join(parts)
+        block = (f"--- Source {i} (lang={lang}, rank={s['search_rank']}) ---\n"
+                 f"URL: {s['url']}\n{text}\n")
+        b = len(block.encode("utf-8"))
+        if running + b > budget and used_ids:
+            n_dropped = len(snippets) - len(used_ids)
+            break
+        parts.append(block)
+        used_ids.append(s["id"])
+        running += b
+
+    parts.append("\nWrite the merged biographical CV:")
+    return "\n".join(parts), used_ids, n_dropped
 
 
-def process_speaker(conn, speaker: dict) -> bool:
+def process_speaker(speaker: dict) -> str:
+    """
+    Merge one speaker's URL snippets into a CV.
+
+    The LLM call is made WITHOUT holding a DB connection (a multi-second call
+    must not keep a write transaction open). DB reads/writes each use their own
+    short transaction with lock retry. Returns the final status string.
+    """
     sid  = speaker["speaker_id"]
     name = speaker["name_cleaned"] or "Unknown"
 
-    snippets = get_synthesised_snippets(conn, sid)
+    with get_conn() as conn:
+        snippets = get_synthesised_snippets(conn, sid)
 
     if not snippets:
-        set_speaker_status(conn, sid, "cv_synth", SKIPPED,
-                           error="no synthesised URL snippets available")
-        return True
+        def _skip():
+            with get_conn() as conn:
+                set_speaker_status(conn, sid, "cv_synth", SKIPPED,
+                                   error="no synthesised URL snippets available")
+        _db_write_with_retry(_skip)
+        return SKIPPED
 
-    # Build prompt
-    merge_prompt = build_merge_prompt(name, snippets)
-    source_url_ids = [s["id"] for s in snippets]
+    merge_prompt, source_url_ids, n_dropped = build_merge_prompt(name, snippets)
+    note = f"dropped {n_dropped} low-rank snippets to fit context" if n_dropped else None
 
+    # LLM call — no DB connection held here.
     cv_text = chat(
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user",   "content": merge_prompt},
         ],
         model=config.MODEL_SYNTHESIZE_CV,
-        max_tokens=2048,
+        max_tokens=_OUTPUT_TOKENS_RESERVED,
     )
 
     if not cv_text.strip():
-        set_speaker_status(conn, sid, "cv_synth", FAILED, error="LLM returned empty CV")
-        return False
+        def _fail():
+            with get_conn() as conn:
+                set_speaker_status(conn, sid, "cv_synth", FAILED, error="LLM returned empty CV")
+        _db_write_with_retry(_fail)
+        return FAILED
 
     # Save CV to file (traceability for the paper)
-    cv_dir  = Path(config.CV_DIR)
+    cv_dir = Path(config.CV_DIR)
     cv_dir.mkdir(parents=True, exist_ok=True)
     cv_path = cv_dir / f"{sid}.txt"
     cv_path.write_text(cv_text, encoding="utf-8")
 
-    save_cv(conn, sid, cv_text, str(cv_path), source_url_ids,
-            model=config.MODEL_SYNTHESIZE_CV,
-            prompt_version=config.PROMPT_VERSION_SYNTHESIZE_CV)
-
-    set_speaker_status(conn, sid, "cv_synth", SUCCESS,
-                       cv_synth_model=config.MODEL_SYNTHESIZE_CV,
-                       cv_synth_prompt_v=config.PROMPT_VERSION_SYNTHESIZE_CV)
-    return True
+    def _save():
+        with get_conn() as conn:
+            save_cv(conn, sid, cv_text, str(cv_path), source_url_ids,
+                    model=config.MODEL_SYNTHESIZE_CV,
+                    prompt_version=config.PROMPT_VERSION_SYNTHESIZE_CV)
+            set_speaker_status(conn, sid, "cv_synth", SUCCESS,
+                               error=note,
+                               cv_synth_model=config.MODEL_SYNTHESIZE_CV,
+                               cv_synth_prompt_v=config.PROMPT_VERSION_SYNTHESIZE_CV)
+    _db_write_with_retry(_save)
+    return SUCCESS
 
 
 def main():
@@ -157,7 +220,8 @@ def main():
 
         print(f"Run {run_id[:8]}  |  {len(speakers)} speakers")
 
-        n_success = n_failed = 0
+        outcomes = {SUCCESS: 0, FAILED: 0, SKIPPED: 0}
+        n_errors = 0
         failed_ids: list[str] = []
 
         for speaker in tqdm(speakers, desc="Merging CVs"):
@@ -165,15 +229,21 @@ def main():
             with get_conn() as conn:
                 set_speaker_status(conn, sid, "cv_synth", "running")
             try:
-                with get_conn() as conn:
-                    process_speaker(conn, speaker)
-                n_success += 1
+                status = process_speaker(speaker)
+                outcomes[status] = outcomes.get(status, 0) + 1
+                if status == FAILED:
+                    failed_ids.append(sid)
             except Exception as e:
-                with get_conn() as conn:
-                    set_speaker_status(conn, sid, "cv_synth", FAILED, error=str(e)[:500])
+                # LLM/save error after retries — reset to pending so a rerun
+                # retries this speaker rather than burying it.
+                try:
+                    with get_conn() as conn:
+                        set_speaker_status(conn, sid, "cv_synth", "pending", error=str(e)[:500])
+                except Exception:
+                    pass
                 failed_ids.append(sid)
-                n_failed += 1
-                tqdm.write(f"  FAILED {speaker['name_cleaned']}: {e}")
+                n_errors += 1
+                tqdm.write(f"  ERROR {speaker['name_cleaned']}: {e}")
 
         if failed_ids:
             with get_conn() as conn:
@@ -181,17 +251,20 @@ def main():
                     conn, "cv_synth", failed_ids,
                     name=f"cv_synth_failures_{run_id[:8]}",
                 )
-            print(f"  {n_failed} failures → failure_batch id={fb_id}")
+            print(f"  {len(failed_ids)} failures → failure_batch id={fb_id}")
 
         with get_conn() as conn:
             conn.execute(
                 """UPDATE batch_runs
                    SET finished_at=?, n_attempted=?, n_success=?, n_failed=?
                    WHERE run_id=?""",
-                (now_iso(), len(speakers), n_success, n_failed, run_id),
+                (now_iso(), len(speakers), outcomes[SUCCESS],
+                 outcomes[FAILED] + n_errors, run_id),
             )
 
-        print(f"\nDone.  success={n_success}  failed={n_failed}")
+        print(f"\nDone.  CV success={outcomes[SUCCESS]}  "
+              f"skipped={outcomes[SKIPPED]}  failed={outcomes[FAILED]}  "
+              f"finalise-errors={n_errors}")
 
     finally:
         if _loaded_instance:
