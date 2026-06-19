@@ -66,15 +66,27 @@ You will be given:
    partyfacts_id | abbreviation | name (native name) | years_active
 3. A biographical CV.
 
-Task: from the CV, extract the politician's political party affiliations over
-time and return a single JSON object, using the partyfacts_id values from the
-provided list.
+GOAL: determine which party the person belonged to at any given time during
+their political career, so that a later step can map any date to the party they
+belonged to at that moment. Return a single JSON object.
 
-Scope:
-- Only code affiliations relevant to the period AFTER 1990. Ignore parties the
-  person belonged to only before 1990.
-- Produce a HISTORY: if the person switched parties, list each affiliation as a
-  separate entry, in chronological order (earliest first).
+What counts as a party affiliation:
+- Code an affiliation whenever the CV clearly associates the person with a
+  party — through membership, holding party office, working for the party, or
+  serving as that party's minister, member of parliament, or candidate.
+- Use the provided list as the scope of parties to consider (it already covers
+  the parties relevant to this period). Match by abbreviation, name, or native
+  name.
+
+History and dates:
+- If the person belonged to ONE party throughout, return a single entry;
+  start_year and end_year may be null when the CV does not clearly state them.
+- If the person SWITCHED parties, return one entry per party in chronological
+  order, and give the switch boundary years as well as the CV supports them
+  (the old party's end_year and/or the new party's start_year). Dates matter
+  mainly to mark these switch points.
+- Do NOT invent precise years. Use the years stated in the CV; use null when a
+  year is unclear. Approximate years that the CV states are fine.
 
 Output JSON:
 {
@@ -82,8 +94,8 @@ Output JSON:
     {
       "partyfacts_id": <integer id taken from the list, or null if the party is not in the list>,
       "party_name_raw": "<party as named or identifiable in the CV>",
-      "start_year": <year the person joined/started with this party, integer, or null>,
-      "end_year": <year they left, integer, or null = still a member or unknown>
+      "start_year": <integer, or null>,
+      "end_year": <integer, or null = current / unknown>
     }
   ],
   "n_parties": <integer>,
@@ -91,14 +103,11 @@ Output JSON:
 }
 
 Rules:
-- Use ONLY partyfacts_id values that appear in the provided list. Match by
-  abbreviation, name, or native name.
-- If the CV clearly indicates a party that is NOT in the list, set
-  partyfacts_id to null but still fill party_name_raw.
-- Do NOT guess or infer affiliations that are not supported by the CV.
-- Use the years stated in the CV; use null where a year is not stated. Do not
-  invent years.
-- If there is no party affiliation after 1990, return
+- Use ONLY partyfacts_id values that appear in the provided list. If a clearly
+  associated party is NOT in the list, set partyfacts_id to null but still fill
+  party_name_raw.
+- Do NOT fabricate an affiliation that has no basis in the CV.
+- If the CV gives no basis for any party affiliation, return
   {"parties": [], "n_parties": 0, "confidence": "high"}.
 Respond ONLY with the JSON object."""
 

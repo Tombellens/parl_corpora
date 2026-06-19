@@ -64,7 +64,7 @@ MODEL_ANNOTATE_D     = "openai/gpt-oss-20b"   # group D
 PROMPT_VERSION_SYNTHESIZE_URL = "1.2"
 PROMPT_VERSION_SYNTHESIZE_CV  = "1.0"
 PROMPT_VERSION_ANNOTATE_A     = "1.0"
-PROMPT_VERSION_ANNOTATE_B     = "2.0"   # PartyFacts-ID anchored, post-1990, timeline
+PROMPT_VERSION_ANNOTATE_B     = "2.1"   # PartyFacts-ID anchored; affiliation via roles; dates as switch boundaries
 PROMPT_VERSION_ANNOTATE_C     = "1.0"
 PROMPT_VERSION_ANNOTATE_D     = "1.0"
 
