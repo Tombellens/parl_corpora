@@ -20,6 +20,10 @@ LLM_LOCK_FILE   = f"{ENRICHMENT_DIR}/llm.lock"
 
 SPEAKER_NAMES_FILE = f"{DATA_DIR}/speaker_names.csv"
 
+# PartyFacts (Group B party annotation)
+PARTYFACTS_DIR     = f"{DATA_DIR}/partyfacts"
+PARTY_PROMPTS_JSON = f"{PARTYFACTS_DIR}/party_prompts.json"
+
 # ---------------------------------------------------------------------------
 # Brave Search API
 # ---------------------------------------------------------------------------
@@ -60,7 +64,7 @@ MODEL_ANNOTATE_D     = "openai/gpt-oss-20b"   # group D
 PROMPT_VERSION_SYNTHESIZE_URL = "1.2"
 PROMPT_VERSION_SYNTHESIZE_CV  = "1.0"
 PROMPT_VERSION_ANNOTATE_A     = "1.0"
-PROMPT_VERSION_ANNOTATE_B     = "1.0"
+PROMPT_VERSION_ANNOTATE_B     = "2.0"   # PartyFacts-ID anchored, post-1990, timeline
 PROMPT_VERSION_ANNOTATE_C     = "1.0"
 PROMPT_VERSION_ANNOTATE_D     = "1.0"
 

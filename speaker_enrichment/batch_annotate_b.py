@@ -1,23 +1,34 @@
 """
 batch_annotate_b.py
 ===================
-Submodule 2 — Group B annotation: political party affiliations.
+Submodule 2 — Group B annotation: political party affiliations, anchored to
+PartyFacts IDs.
+
+Approach: instead of extracting free-text party names and fuzzy-linking to
+PartyFacts afterwards, we give the model a CLOSED per-country list of valid
+parties (PartyFacts id | abbrev | name | years), built by prepare_partyfacts.py
+and stored in party_prompts.json. The model returns a chronological party
+HISTORY using those ids, scoped to affiliations relevant after 1990. Parties
+not in the list are recorded with partyfacts_id=null (escape hatch) so nothing
+is force-fit. Every returned id is validated against the country's allowed set;
+any id not in the list is nulled (and recorded) so stored ids are always real
+PartyFacts ids.
 
 Schema of annotation_json:
 {
   "parties": [
     {
-      "party_name":    "Labour Party",
-      "party_abbrev":  "LAB",          // short name / acronym if known, else null
-      "country":       "GB",           // ISO-2 if determinable
-      "start_year":    1997,           // null if unknown
-      "end_year":      null,           // null = current / unknown
-      "notes":         "..."           // optional clarifying note
+      "partyfacts_id":  36 | null,        // valid id from the country list, or null
+      "partyfacts_name": "New Flemish Alliance (...)" | null,  // canonical, filled when id valid
+      "party_name_raw": "N-VA",           // party as named/identifiable in the CV
+      "start_year":     2003 | null,
+      "end_year":       null              // null = current / unknown
     },
     ...
   ],
-  "n_parties":   1,
-  "confidence": "high" | "medium" | "low"
+  "n_parties":   <int>,
+  "confidence":  "high" | "medium" | "low",
+  "invalid_ids_nulled": [ ... ]           // present only if the model returned bad ids
 }
 
 Usage:
@@ -25,7 +36,10 @@ Usage:
 """
 
 import argparse
+import json
+import time
 import uuid
+from pathlib import Path
 
 from tqdm import tqdm
 
@@ -46,26 +60,77 @@ GROUP = "B"
 
 SYSTEM_PROMPT = """You are a data extraction assistant for a scientific study on politicians.
 
-Given a biographical CV text, extract political party affiliations and return
-a single JSON object.
+You will be given:
+1. The politician's country.
+2. A list of valid political parties for that country, one per line, formatted:
+   partyfacts_id | abbreviation | name (native name) | years_active
+3. A biographical CV.
 
-Fields:
-  "parties" : array of party objects, each with:
-      "party_name"   : full party name (string)
-      "party_abbrev" : abbreviation or short name (string or null)
-      "country"      : ISO-2 country code of the party (string or null)
-      "start_year"   : year joined the party (integer or null)
-      "end_year"     : year left the party (integer or null; null = still member or unknown)
-      "notes"        : any relevant clarifying note (string or null)
-  "n_parties"  : total number of distinct party affiliations found (integer)
-  "confidence" : "high", "medium", or "low"
+Task: from the CV, extract the politician's political party affiliations over
+time and return a single JSON object, using the partyfacts_id values from the
+provided list.
 
-If no party information is present, return {"parties": [], "n_parties": 0, "confidence": "high"}.
+Scope:
+- Only code affiliations relevant to the period AFTER 1990. Ignore parties the
+  person belonged to only before 1990.
+- Produce a HISTORY: if the person switched parties, list each affiliation as a
+  separate entry, in chronological order (earliest first).
+
+Output JSON:
+{
+  "parties": [
+    {
+      "partyfacts_id": <integer id taken from the list, or null if the party is not in the list>,
+      "party_name_raw": "<party as named or identifiable in the CV>",
+      "start_year": <year the person joined/started with this party, integer, or null>,
+      "end_year": <year they left, integer, or null = still a member or unknown>
+    }
+  ],
+  "n_parties": <integer>,
+  "confidence": "high" | "medium" | "low"
+}
+
+Rules:
+- Use ONLY partyfacts_id values that appear in the provided list. Match by
+  abbreviation, name, or native name.
+- If the CV clearly indicates a party that is NOT in the list, set
+  partyfacts_id to null but still fill party_name_raw.
+- Do NOT guess or infer affiliations that are not supported by the CV.
+- Use the years stated in the CV; use null where a year is not stated. Do not
+  invent years.
+- If there is no party affiliation after 1990, return
+  {"parties": [], "n_parties": 0, "confidence": "high"}.
 Respond ONLY with the JSON object."""
 
 
-def annotate(cv_text: str, name: str) -> dict:
-    user_msg = f"Person: {name}\n\nCV:\n{cv_text}\n\nExtract Group B (party) fields:"
+def load_party_data() -> dict:
+    """Load party_prompts.json -> {iso2: {"parties":[...], "prompt_block": "..."}}."""
+    path = Path(config.PARTY_PROMPTS_JSON)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} not found. Run prepare_partyfacts.py first."
+        )
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def annotate(cv_text: str, name: str, country: str, country_data: dict) -> dict:
+    """
+    Extract the post-1990 party history for one speaker, anchored to the
+    country's PartyFacts list. Validates returned ids against the allowed set.
+    """
+    prompt_block = country_data["prompt_block"]
+    valid_ids = {p["partyfacts_id"] for p in country_data["parties"]}
+    id_to_name = {p["partyfacts_id"]: p["name"] for p in country_data["parties"]}
+
+    user_msg = (
+        f"Country: {country}\n\n"
+        f"Valid parties for {country} (partyfacts_id | abbrev | name | years):\n"
+        f"{prompt_block}\n\n"
+        f"Person: {name}\n\n"
+        f"CV:\n{cv_text}\n\n"
+        "Extract the post-1990 party history using the PartyFacts IDs above:"
+    )
+
     response = chat(
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -75,10 +140,47 @@ def annotate(cv_text: str, name: str) -> dict:
         max_tokens=1024,
     )
     result = extract_json(response)
-    result.setdefault("parties", [])
-    result.setdefault("n_parties", len(result["parties"]))
+
+    parties = result.get("parties") or []
+    nulled = []
+    for p in parties:
+        pid = p.get("partyfacts_id")
+        pid_int = None
+        if pid is not None:
+            try:
+                pid_int = int(pid)
+            except (ValueError, TypeError):
+                pid_int = None
+        if pid_int is not None and pid_int in valid_ids:
+            p["partyfacts_id"]  = pid_int
+            p["partyfacts_name"] = id_to_name.get(pid_int)
+        else:
+            if pid is not None:
+                nulled.append(pid)        # model returned an id not in the list
+            p["partyfacts_id"]   = None
+            p["partyfacts_name"] = None
+        p.setdefault("party_name_raw", None)
+        p.setdefault("start_year", None)
+        p.setdefault("end_year", None)
+
+    result["parties"] = parties
+    result["n_parties"] = len(parties)
     result.setdefault("confidence", None)
+    if nulled:
+        result["invalid_ids_nulled"] = nulled
     return result
+
+
+def _db_write_with_retry(fn, max_attempts: int = 10, base_delay: float = 1.0):
+    """Run fn() (opens its own get_conn) with exponential backoff on DB lock."""
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except Exception as e:
+            if "database is locked" in str(e) and attempt < max_attempts - 1:
+                time.sleep(base_delay * (2 ** attempt))
+            else:
+                raise
 
 
 def main():
@@ -91,6 +193,9 @@ def main():
         print("LLM is currently in use. Exiting.")
         return
 
+    party_data = load_party_data()
+    print(f"Loaded PartyFacts lists for {len(party_data)} countries")
+
     init_db()
     run_id = str(uuid.uuid4())
 
@@ -98,7 +203,9 @@ def main():
     try:
         acquire_llm_lock(f"annotate_{GROUP}", config.MODEL_ANNOTATE_B)
         print(f"Loading model {config.MODEL_ANNOTATE_B}...")
-        _loaded_instance = load_model(config.MODEL_ANNOTATE_B, context_length=config.LLM_CONTEXT_LENGTH).get("instance_id")
+        _loaded_instance = load_model(
+            config.MODEL_ANNOTATE_B, context_length=config.LLM_CONTEXT_LENGTH
+        ).get("instance_id")
 
         with get_conn() as conn:
             conn.execute(
@@ -131,47 +238,65 @@ def main():
 
         print(f"Run {run_id[:8]}  |  {len(speakers)} speakers")
 
-        n_success = n_failed = 0
+        outcomes = {SUCCESS: 0, FAILED: 0, SKIPPED: 0}
         failed_ids: list[str] = []
 
         for speaker in tqdm(speakers, desc=f"Annotating group {GROUP}"):
             sid     = speaker["speaker_id"]
             name    = speaker["name_cleaned"] or "Unknown"
             cv_text = speaker["cv_text"] or ""
+            country = speaker["country"]
 
             with get_conn() as conn:
                 set_speaker_status(conn, sid, "annotate_b", "running")
 
+            # Guard: no CV, or no PartyFacts list for this country -> skip cleanly
+            skip_reason = None
             if not cv_text.strip():
-                with get_conn() as conn:
-                    save_annotation(conn, sid, GROUP, None, SKIPPED,
-                                    config.MODEL_ANNOTATE_B,
-                                    config.PROMPT_VERSION_ANNOTATE_B,
-                                    cv_created_at=speaker["cv_created_at"],
-                                    error="empty CV text")
-                    set_speaker_status(conn, sid, "annotate_b", SKIPPED)
+                skip_reason = "empty CV text"
+            elif country not in party_data:
+                skip_reason = f"no PartyFacts list for country {country!r}"
+
+            if skip_reason:
+                def _skip(sid=sid, reason=skip_reason, cva=speaker["cv_created_at"]):
+                    with get_conn() as conn:
+                        save_annotation(conn, sid, GROUP, None, SKIPPED,
+                                        config.MODEL_ANNOTATE_B,
+                                        config.PROMPT_VERSION_ANNOTATE_B,
+                                        cv_created_at=cva, error=reason)
+                        set_speaker_status(conn, sid, "annotate_b", SKIPPED, error=reason)
+                _db_write_with_retry(_skip)
+                outcomes[SKIPPED] += 1
                 continue
 
             try:
-                result = annotate(cv_text, name)
-                with get_conn() as conn:
-                    save_annotation(conn, sid, GROUP, result, SUCCESS,
-                                    config.MODEL_ANNOTATE_B,
-                                    config.PROMPT_VERSION_ANNOTATE_B,
-                                    cv_created_at=speaker["cv_created_at"])
-                    set_speaker_status(conn, sid, "annotate_b", SUCCESS,
-                                       annotate_b_model=config.MODEL_ANNOTATE_B,
-                                       annotate_b_prompt_v=config.PROMPT_VERSION_ANNOTATE_B)
-                n_success += 1
+                result = annotate(cv_text, name, country, party_data[country])
+                def _save(sid=sid, result=result, cva=speaker["cv_created_at"]):
+                    with get_conn() as conn:
+                        save_annotation(conn, sid, GROUP, result, SUCCESS,
+                                        config.MODEL_ANNOTATE_B,
+                                        config.PROMPT_VERSION_ANNOTATE_B,
+                                        cv_created_at=cva)
+                        set_speaker_status(conn, sid, "annotate_b", SUCCESS,
+                                           annotate_b_model=config.MODEL_ANNOTATE_B,
+                                           annotate_b_prompt_v=config.PROMPT_VERSION_ANNOTATE_B)
+                _db_write_with_retry(_save)
+                outcomes[SUCCESS] += 1
             except Exception as e:
-                with get_conn() as conn:
-                    save_annotation(conn, sid, GROUP, None, FAILED,
-                                    config.MODEL_ANNOTATE_B,
-                                    config.PROMPT_VERSION_ANNOTATE_B,
-                                    error=str(e)[:500])
-                    set_speaker_status(conn, sid, "annotate_b", FAILED, error=str(e)[:500])
+                err = str(e)[:500]
+                def _fail(sid=sid, err=err, cva=speaker["cv_created_at"]):
+                    with get_conn() as conn:
+                        save_annotation(conn, sid, GROUP, None, FAILED,
+                                        config.MODEL_ANNOTATE_B,
+                                        config.PROMPT_VERSION_ANNOTATE_B,
+                                        cv_created_at=cva, error=err)
+                        set_speaker_status(conn, sid, "annotate_b", FAILED, error=err)
+                try:
+                    _db_write_with_retry(_fail)
+                except Exception:
+                    pass
                 failed_ids.append(sid)
-                n_failed += 1
+                outcomes[FAILED] += 1
                 tqdm.write(f"  FAILED {name}: {e}")
 
         if failed_ids:
@@ -180,17 +305,18 @@ def main():
                     conn, "annotate_b", failed_ids,
                     name=f"annotate_b_failures_{run_id[:8]}",
                 )
-            print(f"  {n_failed} failures → failure_batch id={fb_id}")
+            print(f"  {len(failed_ids)} failures → failure_batch id={fb_id}")
 
         with get_conn() as conn:
             conn.execute(
                 """UPDATE batch_runs
                    SET finished_at=?, n_attempted=?, n_success=?, n_failed=?
                    WHERE run_id=?""",
-                (now_iso(), len(speakers), n_success, n_failed, run_id),
+                (now_iso(), len(speakers), outcomes[SUCCESS], outcomes[FAILED], run_id),
             )
 
-        print(f"\nDone.  success={n_success}  failed={n_failed}")
+        print(f"\nDone.  success={outcomes[SUCCESS]}  "
+              f"skipped={outcomes[SKIPPED]}  failed={outcomes[FAILED]}")
 
     finally:
         if _loaded_instance:
