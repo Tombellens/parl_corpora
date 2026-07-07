@@ -54,23 +54,50 @@ Given a biographical CV text, extract the person's educational background and
 return a single JSON object.
 
 Fields:
-  "education" : array of education entries, one per degree / qualification, each with:
+  "education" : array of education entries, one per qualification, each with:
       "degree"      : the qualification level — one of "PhD", "Master",
                       "Bachelor", "Other", or null
       "field"       : subject / discipline studied (string or null)
-      "institution" : name of the university or school (string or null)
-  "highest_degree" : the highest degree across all entries
-                     ("PhD", "Master", "Bachelor", "Other", or null)
+      "institution" : name of the university, school, or training body (or null)
   "confidence"     : "high", "medium", or "low"
+
+What to record:
+- University degrees: doctorate → "PhD"; master's / Magister / Diplom → "Master";
+  bachelor's → "Bachelor".
+- ALSO record non-university education as degree "Other": apprenticeships,
+  vocational / trade school (e.g. Handelsschule, Fachschule), professional
+  training, academies, and completed secondary qualifications (e.g. Matura /
+  Abitur) when they are the person's notable education. Use "Other" for these.
+- Return an entry per distinct qualification. An entry with degree "Other" is
+  still a valid entry.
 
 Rules:
 - Only record education that is stated in the CV. Do NOT infer or invent
   degrees, fields, or institutions.
-- Use the institution name as given in the CV.
-- For "highest_degree", rank degrees: PhD > Master > Bachelor > Other.
-- If no education information is present, return
-  {"education": [], "highest_degree": null, "confidence": "high"}.
-Respond ONLY with the JSON object."""
+- Use the institution / training-body name as given in the CV.
+- If NO education of any kind is stated, return
+  {"education": [], "confidence": "high"}.
+Respond ONLY with the JSON object.
+
+(You do not need to compute a highest degree — just list the qualifications.)"""
+
+
+# Degree ranking for the deterministic highest_degree rollup.
+_DEGREE_RANK = {"PhD": 4, "Master": 3, "Bachelor": 2, "Other": 1}
+
+
+def _highest_degree(education: list[dict]) -> str | None:
+    """Top qualification across entries: PhD > Master > Bachelor > Other.
+    Computed in code so the rollup is always consistent with the entries
+    (the model is not trusted to rank them)."""
+    best = None
+    best_rank = 0
+    for e in education:
+        d = e.get("degree")
+        r = _DEGREE_RANK.get(d, 0)
+        if r > best_rank:
+            best_rank, best = r, d
+    return best
 
 
 def annotate(cv_text: str, name: str) -> dict:
@@ -95,7 +122,7 @@ def annotate(cv_text: str, name: str) -> dict:
         })
     return {
         "education":      education,
-        "highest_degree": result.get("highest_degree"),
+        "highest_degree": _highest_degree(education),   # computed, not model-reported
         "confidence":     result.get("confidence"),
     }
 
