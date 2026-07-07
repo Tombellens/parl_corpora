@@ -3,24 +3,28 @@ batch_annotate_c.py
 ===================
 Submodule 2 — Group C annotation: education.
 
-Scope (deliberately lean): highest degree, field(s) of study, institution(s).
-Years, institution country, and "elite" classification are intentionally NOT
-coded here — elite-ness, if needed, is a researcher-defined classification best
-applied deterministically against a reference list in a later step, not judged
-inline by the model.
+Scope: TERTIARY (higher-education) qualifications only, coded to ISCED 2011
+levels. Non-tertiary education (primary, secondary, Matura/Abitur, vocational /
+trade school, apprenticeships) is intentionally NOT recorded. Years, institution
+country, and "elite" classification are also out of scope.
+
+ISCED coding to levels makes education comparable across countries (e.g. an
+Austrian Magister and a US master's both map to level 7), avoiding the earlier
+catch-all "Other" bucket.
 
 Schema of annotation_json:
 {
   "education": [
     {
-      "degree":      "PhD" | "Master" | "Bachelor" | "Other" | null,
+      "isced_level": 8 | 7 | 6 | 5 | null,     // 8 doctorate, 7 master/long-degree,
+                                               // 6 bachelor, 5 short-cycle tertiary
       "field":       "Political Science",      // subject / discipline, or null
       "institution": "University of Cambridge" // or null
     },
     ...
   ],
-  "highest_degree": "PhD" | "Master" | "Bachelor" | "Other" | null,
-  "confidence":     "high" | "medium" | "low"
+  "highest_isced": 8 | 7 | 6 | 5 | null,       // computed in code = max of entries
+  "confidence":    "high" | "medium" | "low"
 }
 
 Usage:
@@ -50,58 +54,57 @@ GROUP = "C"
 
 SYSTEM_PROMPT = """You are a data extraction assistant for a scientific study on politicians.
 
-Given a biographical CV text, extract the person's educational background and
-return a single JSON object.
+From a biographical CV, extract ONLY the person's TERTIARY (higher / university-
+level) education, and return a single JSON object. Code each tertiary
+qualification with its ISCED 2011 level.
+
+Record ONLY tertiary education. DO record university and other higher-education
+qualifications. Do NOT record — ignore entirely — primary school, secondary
+school, upper-secondary qualifications (Matura, Abitur, A-levels, baccalauréat,
+high-school diploma), apprenticeships, and vocational / trade school. These are
+not tertiary.
+
+ISCED levels to assign:
+  8 = Doctoral or equivalent (PhD, doctorate)
+  7 = Master's or equivalent — includes Master's degrees AND the European long
+      first degrees Magister and Diplom, and state-examination degrees in law or
+      medicine
+  6 = Bachelor's or equivalent
+  5 = Short-cycle tertiary (e.g. associate degree, two-year technical /
+      professional college, short Fachhochschule programmes, foundation degree)
 
 Fields:
-  "education" : array of education entries, one per qualification, each with:
-      "degree"      : the qualification level — one of "PhD", "Master",
-                      "Bachelor", "Other", or null
+  "education" : array of tertiary entries, each with:
+      "isced_level" : integer 5, 6, 7, or 8 (or null only if the qualification is
+                      clearly tertiary but its level cannot be determined)
       "field"       : subject / discipline studied (string or null)
-      "institution" : name of the university, school, or training body (or null)
-  "confidence"     : "high", "medium", or "low"
-
-What to record:
-- University degrees: doctorate → "PhD"; master's / Magister / Diplom → "Master";
-  bachelor's → "Bachelor".
-- ALSO record non-university education as degree "Other": apprenticeships,
-  vocational / trade school (e.g. Handelsschule, Fachschule), professional
-  training, academies, and completed secondary qualifications (e.g. Matura /
-  Abitur) when they are the person's notable education. Use "Other" for these.
-- Return an entry per distinct qualification. An entry with degree "Other" is
-  still a valid entry.
+      "institution" : name of the university / higher-education institution (or null)
+  "confidence"  : "high", "medium", or "low"
 
 Rules:
-- Only record education that is stated in the CV. Do NOT infer or invent
-  degrees, fields, or institutions.
-- Use the institution / training-body name as given in the CV.
-- If NO education of any kind is stated, return
+- Only record education stated in the CV. Do NOT infer or invent qualifications,
+  fields, or institutions.
+- If the person has NO tertiary education stated, return
   {"education": [], "confidence": "high"}.
 Respond ONLY with the JSON object.
 
-(You do not need to compute a highest degree — just list the qualifications.)"""
+(You do not need to compute the highest level — just list the tertiary qualifications.)"""
 
 
-# Degree ranking for the deterministic highest_degree rollup.
-_DEGREE_RANK = {"PhD": 4, "Master": 3, "Bachelor": 2, "Other": 1}
+_VALID_ISCED = {5, 6, 7, 8}
 
 
-def _highest_degree(education: list[dict]) -> str | None:
-    """Top qualification across entries: PhD > Master > Bachelor > Other.
-    Computed in code so the rollup is always consistent with the entries
-    (the model is not trusted to rank them)."""
-    best = None
-    best_rank = 0
-    for e in education:
-        d = e.get("degree")
-        r = _DEGREE_RANK.get(d, 0)
-        if r > best_rank:
-            best_rank, best = r, d
-    return best
+def _coerce_isced(val) -> int | None:
+    """Return the ISCED level as an int in {5,6,7,8}, else None."""
+    try:
+        lvl = int(val)
+    except (ValueError, TypeError):
+        return None
+    return lvl if lvl in _VALID_ISCED else None
 
 
 def annotate(cv_text: str, name: str) -> dict:
-    user_msg = f"Person: {name}\n\nCV:\n{cv_text}\n\nExtract Group C (education) fields:"
+    user_msg = f"Person: {name}\n\nCV:\n{cv_text}\n\nExtract Group C (tertiary education) fields:"
     response = chat(
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -112,18 +115,19 @@ def annotate(cv_text: str, name: str) -> dict:
     )
     result = extract_json(response)
 
-    # Keep only the fields in scope; drop anything extra the model may add.
+    # Keep only the fields in scope; coerce ISCED to a valid tertiary level.
     education = []
     for e in (result.get("education") or []):
         education.append({
-            "degree":      e.get("degree"),
+            "isced_level": _coerce_isced(e.get("isced_level")),
             "field":       e.get("field"),
             "institution": e.get("institution"),
         })
+    levels = [e["isced_level"] for e in education if e["isced_level"] is not None]
     return {
-        "education":      education,
-        "highest_degree": _highest_degree(education),   # computed, not model-reported
-        "confidence":     result.get("confidence"),
+        "education":     education,
+        "highest_isced": max(levels) if levels else None,   # computed, not model-reported
+        "confidence":    result.get("confidence"),
     }
 
 
