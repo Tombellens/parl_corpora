@@ -3,23 +3,24 @@ batch_annotate_c.py
 ===================
 Submodule 2 — Group C annotation: education.
 
+Scope (deliberately lean): highest degree, field(s) of study, institution(s).
+Years, institution country, and "elite" classification are intentionally NOT
+coded here — elite-ness, if needed, is a researcher-defined classification best
+applied deterministically against a reference list in a later step, not judged
+inline by the model.
+
 Schema of annotation_json:
 {
   "education": [
     {
-      "degree":          "PhD" | "Master" | "Bachelor" | "Other" | null,
-      "field":           "Political Science",   // subject / discipline
-      "institution":     "University of Cambridge",
-      "institution_country": "GB",              // ISO-2 or null
-      "year_start":      1985,                  // null if unknown
-      "year_end":        1988,                  // null if unknown
-      "elite_institution": true | false | null  // Oxbridge, Ivy League, Grandes Écoles, etc.
+      "degree":      "PhD" | "Master" | "Bachelor" | "Other" | null,
+      "field":       "Political Science",      // subject / discipline, or null
+      "institution": "University of Cambridge" // or null
     },
     ...
   ],
-  "highest_degree":    "PhD" | "Master" | "Bachelor" | "Other" | null,
-  "any_elite_institution": true | false | null,
-  "confidence": "high" | "medium" | "low"
+  "highest_degree": "PhD" | "Master" | "Bachelor" | "Other" | null,
+  "confidence":     "high" | "medium" | "low"
 }
 
 Usage:
@@ -27,6 +28,7 @@ Usage:
 """
 
 import argparse
+import time
 import uuid
 
 from tqdm import tqdm
@@ -46,35 +48,28 @@ from llm_client import (
 
 GROUP = "C"
 
-# Elite institutions list (non-exhaustive, for prompt guidance)
-ELITE_EXAMPLES = (
-    "Oxford, Cambridge, Harvard, Yale, Princeton, MIT, Columbia, Stanford, "
-    "LSE, Sciences Po, ENA/INSP, École Polytechnique, HEC Paris, "
-    "Bocconi, LMU Munich, ETH Zurich, Leiden, KU Leuven"
-)
+SYSTEM_PROMPT = """You are a data extraction assistant for a scientific study on politicians.
 
-SYSTEM_PROMPT = f"""You are a data extraction assistant for a scientific study on politicians.
-
-Given a biographical CV text, extract educational background and return a single JSON object.
+Given a biographical CV text, extract the person's educational background and
+return a single JSON object.
 
 Fields:
-  "education" : array of education entries, each with:
-      "degree"              : highest degree at that institution — one of:
-                              "PhD", "Master", "Bachelor", "Other", or null
-      "field"               : subject / discipline studied (string or null)
-      "institution"         : name of university or school (string or null)
-      "institution_country" : ISO-2 country code (string or null)
-      "year_start"          : year started (integer or null)
-      "year_end"            : year finished / graduated (integer or null)
-      "elite_institution"   : true if the institution is considered elite / prestigious
-                              (examples: {ELITE_EXAMPLES}), false otherwise, null if unknown
-  "highest_degree"        : the highest degree across all entries
-                            ("PhD", "Master", "Bachelor", "Other", or null)
-  "any_elite_institution" : true if any entry has elite_institution=true, else false, null if unknown
-  "confidence"            : "high", "medium", or "low"
+  "education" : array of education entries, one per degree / qualification, each with:
+      "degree"      : the qualification level — one of "PhD", "Master",
+                      "Bachelor", "Other", or null
+      "field"       : subject / discipline studied (string or null)
+      "institution" : name of the university or school (string or null)
+  "highest_degree" : the highest degree across all entries
+                     ("PhD", "Master", "Bachelor", "Other", or null)
+  "confidence"     : "high", "medium", or "low"
 
-If no education information is present, return:
-  {{"education": [], "highest_degree": null, "any_elite_institution": null, "confidence": "high"}}
+Rules:
+- Only record education that is stated in the CV. Do NOT infer or invent
+  degrees, fields, or institutions.
+- Use the institution name as given in the CV.
+- For "highest_degree", rank degrees: PhD > Master > Bachelor > Other.
+- If no education information is present, return
+  {"education": [], "highest_degree": null, "confidence": "high"}.
 Respond ONLY with the JSON object."""
 
 
@@ -89,11 +84,32 @@ def annotate(cv_text: str, name: str) -> dict:
         max_tokens=1024,
     )
     result = extract_json(response)
-    result.setdefault("education", [])
-    result.setdefault("highest_degree", None)
-    result.setdefault("any_elite_institution", None)
-    result.setdefault("confidence", None)
-    return result
+
+    # Keep only the fields in scope; drop anything extra the model may add.
+    education = []
+    for e in (result.get("education") or []):
+        education.append({
+            "degree":      e.get("degree"),
+            "field":       e.get("field"),
+            "institution": e.get("institution"),
+        })
+    return {
+        "education":      education,
+        "highest_degree": result.get("highest_degree"),
+        "confidence":     result.get("confidence"),
+    }
+
+
+def _db_write_with_retry(fn, max_attempts: int = 10, base_delay: float = 1.0):
+    """Run fn() (opens its own get_conn) with exponential backoff on DB lock."""
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except Exception as e:
+            if "database is locked" in str(e) and attempt < max_attempts - 1:
+                time.sleep(base_delay * (2 ** attempt))
+            else:
+                raise
 
 
 def main():
@@ -113,7 +129,9 @@ def main():
     try:
         acquire_llm_lock(f"annotate_{GROUP}", config.MODEL_ANNOTATE_C)
         print(f"Loading model {config.MODEL_ANNOTATE_C}...")
-        _loaded_instance = load_model(config.MODEL_ANNOTATE_C, context_length=config.LLM_CONTEXT_LENGTH).get("instance_id")
+        _loaded_instance = load_model(
+            config.MODEL_ANNOTATE_C, context_length=config.LLM_CONTEXT_LENGTH
+        ).get("instance_id")
 
         with get_conn() as conn:
             conn.execute(
@@ -146,7 +164,7 @@ def main():
 
         print(f"Run {run_id[:8]}  |  {len(speakers)} speakers")
 
-        n_success = n_failed = 0
+        outcomes = {SUCCESS: 0, FAILED: 0, SKIPPED: 0}
         failed_ids: list[str] = []
 
         for speaker in tqdm(speakers, desc=f"Annotating group {GROUP}"):
@@ -158,35 +176,45 @@ def main():
                 set_speaker_status(conn, sid, "annotate_c", "running")
 
             if not cv_text.strip():
-                with get_conn() as conn:
-                    save_annotation(conn, sid, GROUP, None, SKIPPED,
-                                    config.MODEL_ANNOTATE_C,
-                                    config.PROMPT_VERSION_ANNOTATE_C,
-                                    cv_created_at=speaker["cv_created_at"],
-                                    error="empty CV text")
-                    set_speaker_status(conn, sid, "annotate_c", SKIPPED)
+                def _skip(sid=sid, cva=speaker["cv_created_at"]):
+                    with get_conn() as conn:
+                        save_annotation(conn, sid, GROUP, None, SKIPPED,
+                                        config.MODEL_ANNOTATE_C,
+                                        config.PROMPT_VERSION_ANNOTATE_C,
+                                        cv_created_at=cva, error="empty CV text")
+                        set_speaker_status(conn, sid, "annotate_c", SKIPPED)
+                _db_write_with_retry(_skip)
+                outcomes[SKIPPED] += 1
                 continue
 
             try:
                 result = annotate(cv_text, name)
-                with get_conn() as conn:
-                    save_annotation(conn, sid, GROUP, result, SUCCESS,
-                                    config.MODEL_ANNOTATE_C,
-                                    config.PROMPT_VERSION_ANNOTATE_C,
-                                    cv_created_at=speaker["cv_created_at"])
-                    set_speaker_status(conn, sid, "annotate_c", SUCCESS,
-                                       annotate_c_model=config.MODEL_ANNOTATE_C,
-                                       annotate_c_prompt_v=config.PROMPT_VERSION_ANNOTATE_C)
-                n_success += 1
+                def _save(sid=sid, result=result, cva=speaker["cv_created_at"]):
+                    with get_conn() as conn:
+                        save_annotation(conn, sid, GROUP, result, SUCCESS,
+                                        config.MODEL_ANNOTATE_C,
+                                        config.PROMPT_VERSION_ANNOTATE_C,
+                                        cv_created_at=cva)
+                        set_speaker_status(conn, sid, "annotate_c", SUCCESS,
+                                           annotate_c_model=config.MODEL_ANNOTATE_C,
+                                           annotate_c_prompt_v=config.PROMPT_VERSION_ANNOTATE_C)
+                _db_write_with_retry(_save)
+                outcomes[SUCCESS] += 1
             except Exception as e:
-                with get_conn() as conn:
-                    save_annotation(conn, sid, GROUP, None, FAILED,
-                                    config.MODEL_ANNOTATE_C,
-                                    config.PROMPT_VERSION_ANNOTATE_C,
-                                    error=str(e)[:500])
-                    set_speaker_status(conn, sid, "annotate_c", FAILED, error=str(e)[:500])
+                err = str(e)[:500]
+                def _fail(sid=sid, err=err, cva=speaker["cv_created_at"]):
+                    with get_conn() as conn:
+                        save_annotation(conn, sid, GROUP, None, FAILED,
+                                        config.MODEL_ANNOTATE_C,
+                                        config.PROMPT_VERSION_ANNOTATE_C,
+                                        cv_created_at=cva, error=err)
+                        set_speaker_status(conn, sid, "annotate_c", FAILED, error=err)
+                try:
+                    _db_write_with_retry(_fail)
+                except Exception:
+                    pass
                 failed_ids.append(sid)
-                n_failed += 1
+                outcomes[FAILED] += 1
                 tqdm.write(f"  FAILED {name}: {e}")
 
         if failed_ids:
@@ -195,17 +223,18 @@ def main():
                     conn, "annotate_c", failed_ids,
                     name=f"annotate_c_failures_{run_id[:8]}",
                 )
-            print(f"  {n_failed} failures → failure_batch id={fb_id}")
+            print(f"  {len(failed_ids)} failures → failure_batch id={fb_id}")
 
         with get_conn() as conn:
             conn.execute(
                 """UPDATE batch_runs
                    SET finished_at=?, n_attempted=?, n_success=?, n_failed=?
                    WHERE run_id=?""",
-                (now_iso(), len(speakers), n_success, n_failed, run_id),
+                (now_iso(), len(speakers), outcomes[SUCCESS], outcomes[FAILED], run_id),
             )
 
-        print(f"\nDone.  success={n_success}  failed={n_failed}")
+        print(f"\nDone.  success={outcomes[SUCCESS]}  "
+              f"skipped={outcomes[SKIPPED]}  failed={outcomes[FAILED]}")
 
     finally:
         if _loaded_instance:
