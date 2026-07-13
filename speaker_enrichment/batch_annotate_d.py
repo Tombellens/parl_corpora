@@ -5,14 +5,13 @@ Submodule 2 — Group D annotation: sectors of professional experience.
 
 Simplified design: instead of a full career timeline (titles, organisations,
 dates), we record only the SET of high-level sectors in which the person had
-professional / occupational experience before or during their time as an MP.
-No durations, no titles — just a deduplicated set of sector codes from a fixed
-codebook. The national parliamentary mandate itself is NOT coded (it is constant
-across all speakers).
+professional / occupational experience. Sectors are the first-digit groups
+(1-8) of the political-elite career codebook. No durations, no titles — just a
+deduplicated set of sector code numbers.
 
 Schema of annotation_json:
 {
-  "sectors": ["business", "politics_party", ...],   // deduplicated, from the codebook
+  "sectors": [1, 4, 6],                             // deduplicated first-digit codes
   "confidence": "high" | "medium" | "low"
 }
 
@@ -41,63 +40,67 @@ from llm_client import (
 
 GROUP = "D"
 
-# Fixed high-level sector codebook (order = canonical output order).
-SECTOR_ORDER = [
-    "public_administration",
-    "politics_party",
-    "law",
-    "business",
-    "academia_education",
-    "media",
-    "civil_society",
-    "military_security",
-    "other",
-]
-SECTOR_CODES = set(SECTOR_ORDER)
+# High-level (first-digit) sector groups from the political-elite career
+# codebook. We record only the top-level group a position belongs to.
+SECTOR_CODES = {1, 2, 3, 4, 5, 6, 7, 8}
 
 SYSTEM_PROMPT = """You are a data extraction assistant for a scientific study on politicians.
 
 From a biographical CV, identify the SECTORS in which the person had professional
-or occupational experience before or during their time as a member of parliament.
-Return a single JSON object with a deduplicated set of sector codes. Do NOT report
-job titles, organisations, durations, or dates — only the set of sectors.
+or occupational experience at any point in their career. Return a single JSON
+object with a deduplicated set of high-level sector codes. Do NOT report job
+titles, organisations, durations, or dates — only the set of sector code numbers.
 
-Use ONLY these sector codes:
-  "public_administration" : civil service, public-sector agencies, non-elected
-                            government / administrative roles, diplomacy
-  "politics_party"        : professional party or political roles (functionary,
-                            adviser, political staff) and prior elected office at
-                            local, regional, or European level
-  "law"                   : legal profession — lawyer, judge, prosecutor, notary
-  "business"              : private sector — employee, manager, executive,
-                            entrepreneur, self-employed, farming, skilled trades
-  "academia_education"    : universities, research, teaching at any level
-  "media"                 : journalism, broadcasting, publishing, communications / PR
-  "civil_society"         : NGOs, trade unions, interest / advocacy groups,
-                            foundations, charities, religious organisations
-  "military_security"     : armed forces, police, intelligence, security services
-  "other"                 : any occupation not covered above (e.g. healthcare, arts, sports)
+Assign each position to one of these high-level sectors and return the set of
+sector numbers that apply:
+
+1 = Central government executive ("executive triangle"): head of state or
+    government and ministers (president, prime minister, deputy PM, minister with
+    or without portfolio, European Commissioner), and senior political, advisory
+    or top-bureaucratic roles inside ministries, the centre of government, or the
+    presidential office (e.g. head of ministerial cabinet, secretary/director
+    general).
+2 = Public administration (outside the executive triangle): civil servants and
+    bureaucrats at national, sub-national and local level; heads and staff of
+    non-ministerial public bodies; prefects/governors; non-political
+    administration of parliament.
+3 = Public sector organisations and industries: state-owned or public bodies and
+    enterprises — finance/central bank, transport, utilities, telecom/postal,
+    public broadcasting, public healthcare, public education and research (school,
+    university, other), police, military and defence, diplomatic service.
+4 = Politics / political office and employment (outside the executive triangle):
+    executive office such as mayor or regional minister; legislative office such
+    as MEP, MP, senator, regional or local councillor; party office/functions;
+    paid political employment (for a party, MP or MEP); work for party foundations
+    or politically affiliated organisations.
+5 = Judiciary and oversight: prosecutors, judges, public-sector lawyers/notaries,
+    court and judiciary administration, constitutional court, accountability
+    institutions (ombudsperson, audit, anti-corruption, etc.), regulatory agencies.
+6 = Private and third sector: private-sector managers, employees and self-employed
+    (at home or abroad); NGOs, trade unions, associations, foundations and
+    charities; non-public media (journalist); religious bodies.
+7 = International organisations (non-political): administrative roles in the EU
+    institutions, UN, NATO, World Bank and other international organisations.
+8 = Other: unemployed, retired, prison, no prior job, parental leave, or a period
+    of further education / career break.
 
 Rules:
-- Include a sector if the CV shows the person worked in it at any point before or
-  during their parliamentary career.
-- Do NOT code the national parliamentary mandate itself (being an MP / senator /
-  member of the national parliament). Code only other sectors of experience.
+- Include a sector number if the CV shows the person worked in it at any point.
 - Base sectors only on what the CV states. Do NOT infer experience with no basis.
-- Return each sector at most once (a set, not a list of positions).
-- If the CV shows no professional experience outside the parliamentary mandate,
-  return {"sectors": [], "confidence": "high"}.
+- Return each number at most once.
+- If the CV shows no codeable professional experience, return
+  {"sectors": [], "confidence": "high"}.
 
 Output JSON:
 {
-  "sectors": ["business", "politics_party", ...],
+  "sectors": [1, 4, 6],
   "confidence": "high" | "medium" | "low"
 }
 Respond ONLY with the JSON object."""
 
 
 def annotate(cv_text: str, name: str) -> dict:
-    user_msg = f"Person: {name}\n\nCV:\n{cv_text}\n\nList Group D (sectors of experience):"
+    user_msg = f"Person: {name}\n\nCV:\n{cv_text}\n\nList Group D (sector code numbers):"
     response = chat(
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -108,14 +111,16 @@ def annotate(cv_text: str, name: str) -> dict:
     )
     result = extract_json(response)
 
-    # Validate against the codebook, deduplicate, and order canonically.
+    # Validate against the codebook {1..8}, deduplicate, sort.
     found = set()
     for s in (result.get("sectors") or []):
-        if isinstance(s, str):
-            code = s.strip().lower()
-            if code in SECTOR_CODES:
-                found.add(code)
-    sectors = [c for c in SECTOR_ORDER if c in found]
+        try:
+            code = int(s)
+        except (ValueError, TypeError):
+            continue
+        if code in SECTOR_CODES:
+            found.add(code)
+    sectors = sorted(found)
 
     return {"sectors": sectors, "confidence": result.get("confidence")}
 
