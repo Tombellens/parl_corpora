@@ -1,44 +1,27 @@
 """
 batch_annotate_d.py
 ===================
-Submodule 2 — Group D annotation: career steps.
+Submodule 2 — Group D annotation: sectors of professional experience.
+
+Simplified design: instead of a full career timeline (titles, organisations,
+dates), we record only the SET of high-level sectors in which the person had
+professional / occupational experience before or during their time as an MP.
+No durations, no titles — just a deduplicated set of sector codes from a fixed
+codebook. The national parliamentary mandate itself is NOT coded (it is constant
+across all speakers).
 
 Schema of annotation_json:
 {
-  "career": [
-    {
-      "job_title":     "Minister of Finance",
-      "organisation":  "Government of France",
-      "sector":        "government" | "legislature" | "judiciary" | "military" |
-                       "business" | "academia" | "ngo" | "media" | "party" |
-                       "other" | null,
-      "start_year":    2012,
-      "end_year":      2017,         // null = current or unknown
-      "notes":         null
-    },
-    ...
-  ],
-  "n_positions":  5,
-  "confidence":  "high" | "medium" | "low"
+  "sectors": ["business", "politics_party", ...],   // deduplicated, from the codebook
+  "confidence": "high" | "medium" | "low"
 }
-
-Sector codes (use exactly these strings):
-  government  — executive branch (minister, secretary, mayor, …)
-  legislature — parliament, senate, assembly member, …
-  judiciary   — judge, magistrate, …
-  military    — army, navy, air force officer, …
-  business    — private sector, corporate, entrepreneur
-  academia    — professor, researcher, university
-  ngo         — civil society, think tank, union, association
-  media       — journalist, broadcaster, editor
-  party       — party official / secretary (not as elected MP)
-  other       — anything else
 
 Usage:
     python3 batch_annotate_d.py [--limit N] [--failure-batch-id ID]
 """
 
 import argparse
+import time
 import uuid
 
 from tqdm import tqdm
@@ -58,50 +41,95 @@ from llm_client import (
 
 GROUP = "D"
 
+# Fixed high-level sector codebook (order = canonical output order).
+SECTOR_ORDER = [
+    "public_administration",
+    "politics_party",
+    "law",
+    "business",
+    "academia_education",
+    "media",
+    "civil_society",
+    "military_security",
+    "other",
+]
+SECTOR_CODES = set(SECTOR_ORDER)
+
 SYSTEM_PROMPT = """You are a data extraction assistant for a scientific study on politicians.
 
-Given a biographical CV text, extract the career history and return a single JSON object.
+From a biographical CV, identify the SECTORS in which the person had professional
+or occupational experience before or during their time as a member of parliament.
+Return a single JSON object with a deduplicated set of sector codes. Do NOT report
+job titles, organisations, durations, or dates — only the set of sectors.
 
-Fields:
-  "career" : array of career step objects (chronological order, earliest first), each with:
-      "job_title"    : position or role title (string or null)
-      "organisation" : employer / institution name (string or null)
-      "sector"       : one of the following codes (string or null):
-                       "government", "legislature", "judiciary", "military",
-                       "business", "academia", "ngo", "media", "party", "other"
-      "start_year"   : year started (integer or null)
-      "end_year"     : year ended (integer or null; null = current or unknown)
-      "notes"        : brief clarifying note if needed (string or null)
-  "n_positions" : total number of career steps found (integer)
-  "confidence"  : "high", "medium", or "low"
+Use ONLY these sector codes:
+  "public_administration" : civil service, public-sector agencies, non-elected
+                            government / administrative roles, diplomacy
+  "politics_party"        : professional party or political roles (functionary,
+                            adviser, political staff) and prior elected office at
+                            local, regional, or European level
+  "law"                   : legal profession — lawyer, judge, prosecutor, notary
+  "business"              : private sector — employee, manager, executive,
+                            entrepreneur, self-employed, farming, skilled trades
+  "academia_education"    : universities, research, teaching at any level
+  "media"                 : journalism, broadcasting, publishing, communications / PR
+  "civil_society"         : NGOs, trade unions, interest / advocacy groups,
+                            foundations, charities, religious organisations
+  "military_security"     : armed forces, police, intelligence, security services
+  "other"                 : any occupation not covered above (e.g. healthcare, arts, sports)
 
-If no career information is present, return:
-  {"career": [], "n_positions": 0, "confidence": "high"}
+Rules:
+- Include a sector if the CV shows the person worked in it at any point before or
+  during their parliamentary career.
+- Do NOT code the national parliamentary mandate itself (being an MP / senator /
+  member of the national parliament). Code only other sectors of experience.
+- Base sectors only on what the CV states. Do NOT infer experience with no basis.
+- Return each sector at most once (a set, not a list of positions).
+- If the CV shows no professional experience outside the parliamentary mandate,
+  return {"sectors": [], "confidence": "high"}.
 
-Important:
-- Parliamentary mandates (MP, senator, MEP) → sector "legislature"
-- Ministerial roles → sector "government"
-- Party leadership roles without electoral mandate → sector "party"
-- List steps chronologically; include overlapping roles as separate entries
-
+Output JSON:
+{
+  "sectors": ["business", "politics_party", ...],
+  "confidence": "high" | "medium" | "low"
+}
 Respond ONLY with the JSON object."""
 
 
 def annotate(cv_text: str, name: str) -> dict:
-    user_msg = f"Person: {name}\n\nCV:\n{cv_text}\n\nExtract Group D (career) fields:"
+    user_msg = f"Person: {name}\n\nCV:\n{cv_text}\n\nList Group D (sectors of experience):"
     response = chat(
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user",   "content": user_msg},
         ],
         model=config.MODEL_ANNOTATE_D,
-        max_tokens=2048,
+        max_tokens=256,
     )
     result = extract_json(response)
-    result.setdefault("career", [])
-    result.setdefault("n_positions", len(result["career"]))
-    result.setdefault("confidence", None)
-    return result
+
+    # Validate against the codebook, deduplicate, and order canonically.
+    found = set()
+    for s in (result.get("sectors") or []):
+        if isinstance(s, str):
+            code = s.strip().lower()
+            if code in SECTOR_CODES:
+                found.add(code)
+    sectors = [c for c in SECTOR_ORDER if c in found]
+
+    return {"sectors": sectors, "confidence": result.get("confidence")}
+
+
+def _db_write_with_retry(fn, max_attempts: int = 10, base_delay: float = 1.0):
+    """Run fn() (opens its own get_conn) with exponential backoff on DB lock."""
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except Exception as e:
+            if "database is locked" in str(e) and attempt < max_attempts - 1:
+                time.sleep(base_delay * (2 ** attempt))
+            else:
+                raise
 
 
 def main():
@@ -121,7 +149,9 @@ def main():
     try:
         acquire_llm_lock(f"annotate_{GROUP}", config.MODEL_ANNOTATE_D)
         print(f"Loading model {config.MODEL_ANNOTATE_D}...")
-        _loaded_instance = load_model(config.MODEL_ANNOTATE_D, context_length=config.LLM_CONTEXT_LENGTH).get("instance_id")
+        _loaded_instance = load_model(
+            config.MODEL_ANNOTATE_D, context_length=config.LLM_CONTEXT_LENGTH
+        ).get("instance_id")
 
         with get_conn() as conn:
             conn.execute(
@@ -154,7 +184,7 @@ def main():
 
         print(f"Run {run_id[:8]}  |  {len(speakers)} speakers")
 
-        n_success = n_failed = 0
+        outcomes = {SUCCESS: 0, FAILED: 0, SKIPPED: 0}
         failed_ids: list[str] = []
 
         for speaker in tqdm(speakers, desc=f"Annotating group {GROUP}"):
@@ -166,35 +196,45 @@ def main():
                 set_speaker_status(conn, sid, "annotate_d", "running")
 
             if not cv_text.strip():
-                with get_conn() as conn:
-                    save_annotation(conn, sid, GROUP, None, SKIPPED,
-                                    config.MODEL_ANNOTATE_D,
-                                    config.PROMPT_VERSION_ANNOTATE_D,
-                                    cv_created_at=speaker["cv_created_at"],
-                                    error="empty CV text")
-                    set_speaker_status(conn, sid, "annotate_d", SKIPPED)
+                def _skip(sid=sid, cva=speaker["cv_created_at"]):
+                    with get_conn() as conn:
+                        save_annotation(conn, sid, GROUP, None, SKIPPED,
+                                        config.MODEL_ANNOTATE_D,
+                                        config.PROMPT_VERSION_ANNOTATE_D,
+                                        cv_created_at=cva, error="empty CV text")
+                        set_speaker_status(conn, sid, "annotate_d", SKIPPED)
+                _db_write_with_retry(_skip)
+                outcomes[SKIPPED] += 1
                 continue
 
             try:
                 result = annotate(cv_text, name)
-                with get_conn() as conn:
-                    save_annotation(conn, sid, GROUP, result, SUCCESS,
-                                    config.MODEL_ANNOTATE_D,
-                                    config.PROMPT_VERSION_ANNOTATE_D,
-                                    cv_created_at=speaker["cv_created_at"])
-                    set_speaker_status(conn, sid, "annotate_d", SUCCESS,
-                                       annotate_d_model=config.MODEL_ANNOTATE_D,
-                                       annotate_d_prompt_v=config.PROMPT_VERSION_ANNOTATE_D)
-                n_success += 1
+                def _save(sid=sid, result=result, cva=speaker["cv_created_at"]):
+                    with get_conn() as conn:
+                        save_annotation(conn, sid, GROUP, result, SUCCESS,
+                                        config.MODEL_ANNOTATE_D,
+                                        config.PROMPT_VERSION_ANNOTATE_D,
+                                        cv_created_at=cva)
+                        set_speaker_status(conn, sid, "annotate_d", SUCCESS,
+                                           annotate_d_model=config.MODEL_ANNOTATE_D,
+                                           annotate_d_prompt_v=config.PROMPT_VERSION_ANNOTATE_D)
+                _db_write_with_retry(_save)
+                outcomes[SUCCESS] += 1
             except Exception as e:
-                with get_conn() as conn:
-                    save_annotation(conn, sid, GROUP, None, FAILED,
-                                    config.MODEL_ANNOTATE_D,
-                                    config.PROMPT_VERSION_ANNOTATE_D,
-                                    error=str(e)[:500])
-                    set_speaker_status(conn, sid, "annotate_d", FAILED, error=str(e)[:500])
+                err = str(e)[:500]
+                def _fail(sid=sid, err=err, cva=speaker["cv_created_at"]):
+                    with get_conn() as conn:
+                        save_annotation(conn, sid, GROUP, None, FAILED,
+                                        config.MODEL_ANNOTATE_D,
+                                        config.PROMPT_VERSION_ANNOTATE_D,
+                                        cv_created_at=cva, error=err)
+                        set_speaker_status(conn, sid, "annotate_d", FAILED, error=err)
+                try:
+                    _db_write_with_retry(_fail)
+                except Exception:
+                    pass
                 failed_ids.append(sid)
-                n_failed += 1
+                outcomes[FAILED] += 1
                 tqdm.write(f"  FAILED {name}: {e}")
 
         if failed_ids:
@@ -203,17 +243,18 @@ def main():
                     conn, "annotate_d", failed_ids,
                     name=f"annotate_d_failures_{run_id[:8]}",
                 )
-            print(f"  {n_failed} failures → failure_batch id={fb_id}")
+            print(f"  {len(failed_ids)} failures → failure_batch id={fb_id}")
 
         with get_conn() as conn:
             conn.execute(
                 """UPDATE batch_runs
                    SET finished_at=?, n_attempted=?, n_success=?, n_failed=?
                    WHERE run_id=?""",
-                (now_iso(), len(speakers), n_success, n_failed, run_id),
+                (now_iso(), len(speakers), outcomes[SUCCESS], outcomes[FAILED], run_id),
             )
 
-        print(f"\nDone.  success={n_success}  failed={n_failed}")
+        print(f"\nDone.  success={outcomes[SUCCESS]}  "
+              f"skipped={outcomes[SKIPPED]}  failed={outcomes[FAILED]}")
 
     finally:
         if _loaded_instance:
