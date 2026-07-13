@@ -112,6 +112,43 @@ def start_lm_studio_server() -> bool:
     return False
 
 
+def ensure_server_up(timeout: int = 90) -> bool:
+    """
+    Ensure the LM Studio HTTP server is reachable, restarting it headlessly if
+    it has died. For long unattended runs where the server process can crash
+    (which otherwise turns every subsequent request into a 'Connection error').
+
+    Restart recipe matches the manual one used on this box: a virtual display
+    (Xvfb :99) plus `lms server start`. Xvfb and the server are launched
+    detached so they survive this process. Returns True if the server is up.
+    """
+    if is_lm_studio_running():
+        return True
+    lms = LMS_BIN if Path(LMS_BIN).exists() else "lms"
+    print("  LM Studio server unreachable — restarting via Xvfb…")
+    script = (
+        'pkill -f "Xvfb :99" 2>/dev/null; rm -f /tmp/.X99-lock 2>/dev/null; '
+        'Xvfb :99 -screen 0 1024x768x24 >/dev/null 2>&1 & '
+        'sleep 2; '
+        f'DISPLAY=:99 "{lms}" server start >/dev/null 2>&1 &'
+    )
+    try:
+        subprocess.Popen(["bash", "-lc", script],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        print(f"  ✗ could not launch server restart: {e}")
+        return False
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(3)
+        if is_lm_studio_running():
+            print("  ✓ LM Studio server restarted.")
+            return True
+    print(f"  ✗ server did not come back within {timeout}s.")
+    return False
+
+
 def stop_lm_studio_server() -> None:
     """Stop the LM Studio server via `lms server stop`."""
     lms = LMS_BIN if Path(LMS_BIN).exists() else "lms"
@@ -284,6 +321,24 @@ def _is_crash_or_fallback(err: str) -> bool:
     )
 
 
+def _is_server_down(err: str) -> bool:
+    """
+    True if the error means the LM Studio server itself is unreachable (the
+    process died), as opposed to a model-level failure. Recovered by restarting
+    the server and reloading the model.
+    """
+    e = err.lower()
+    return (
+        "connection error" in e
+        or "connection refused" in e
+        or "max retries exceeded" in e
+        or "failed to establish a new connection" in e
+        or "remote end closed" in e
+        or "connection aborted" in e
+        or "connection reset" in e
+    )
+
+
 def chat(messages: list[dict], model: str, temperature: float = 0,
          max_tokens: int = 4096, max_attempts: int = 4, **kwargs) -> str:
     """
@@ -309,7 +364,18 @@ def chat(messages: list[dict], model: str, temperature: float = 0,
             if attempt == max_attempts - 1:
                 raise
             err = str(e)
-            if _is_crash_or_fallback(err):
+            if _is_server_down(err):
+                # The server process itself died — restart it (headless) and
+                # reload the model before retrying. This is what turned a single
+                # server death into 20k+ 'Connection error' failures before.
+                print(f"  LLM server down (attempt {attempt+1}/{max_attempts}) "
+                      f"— restarting server: {err[:120]}")
+                if ensure_server_up():
+                    reload_last_model()
+                    time.sleep(2)
+                else:
+                    time.sleep(15)   # give a manual restart a chance
+            elif _is_crash_or_fallback(err):
                 print(f"  LLM crash/fallback detected (attempt {attempt+1}/{max_attempts}) "
                       f"— reloading model: {err[:120]}")
                 time.sleep(3)
