@@ -70,9 +70,13 @@ sector numbers that apply:
     university, other), police, military and defence, diplomatic service.
 4 = Politics / political office and employment (outside the executive triangle):
     executive office such as mayor or regional minister; legislative office such
-    as MEP, MP, senator, regional or local councillor; party office/functions;
-    paid political employment (for a party, MP or MEP); work for party foundations
-    or politically affiliated organisations.
+    as MEP, senator, regional or local councillor; party office/functions; paid
+    political employment (for a party, MP or MEP); work for party foundations or
+    politically affiliated organisations.
+    IMPORTANT: do NOT count the person's own seat in the NATIONAL parliament
+    (being an MP / member of the national legislature) — that is true of everyone
+    in this study and must be excluded. Still assign 4 for OTHER political roles
+    (mayor, regional/local councillor, MEP, party office, political employment).
 5 = Judiciary and oversight: prosecutors, judges, public-sector lawyers/notaries,
     court and judiciary administration, constitutional court, accountability
     institutions (ombudsperson, audit, anti-corruption, etc.), regulatory agencies.
@@ -86,10 +90,13 @@ sector numbers that apply:
 
 Rules:
 - Include a sector number if the CV shows the person worked in it at any point.
+- Do NOT code the person's own national parliamentary mandate (being an MP /
+  member of the national parliament). It is constant across everyone and must be
+  excluded. Other political office still counts under 4.
 - Base sectors only on what the CV states. Do NOT infer experience with no basis.
 - Return each number at most once.
-- If the CV shows no codeable professional experience, return
-  {"sectors": [], "confidence": "high"}.
+- If the CV shows no codeable professional experience outside the national
+  parliamentary mandate, return {"sectors": [], "confidence": "high"}.
 
 Output JSON:
 {
