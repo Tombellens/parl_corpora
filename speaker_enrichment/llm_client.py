@@ -388,13 +388,15 @@ def chat(messages: list[dict], model: str, temperature: float = 0,
 
 def extract_json(response: str) -> dict | list:
     """
-    Pull a JSON object or array out of an LLM response that may be wrapped
-    in markdown code fences.
+    Pull a JSON object or array out of an LLM response that may be wrapped in
+    markdown code fences or surrounded by reasoning text (as reasoning models
+    like gpt-oss sometimes emit).
     """
     text = response.strip()
+
+    # 1. Fenced ```json blocks.
     if "```" in text:
         parts = text.split("```")
-        # take the first fenced block
         for part in parts[1::2]:
             cleaned = part.strip()
             if cleaned.startswith("json"):
@@ -403,7 +405,26 @@ def extract_json(response: str) -> dict | list:
                 return json.loads(cleaned)
             except json.JSONDecodeError:
                 continue
-    return json.loads(text)
+
+    # 2. Whole string is JSON.
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # 3. Locate a JSON object/array embedded in surrounding text (e.g. the model
+    #    emitted reasoning before the JSON). Take the outermost braces/brackets.
+    for open_c, close_c in (("{", "}"), ("[", "]")):
+        start = text.find(open_c)
+        end = text.rfind(close_c)
+        if 0 <= start < end:
+            try:
+                return json.loads(text[start:end + 1])
+            except json.JSONDecodeError:
+                continue
+
+    # Nothing parseable (e.g. an empty/truncated response) — signal failure.
+    raise json.JSONDecodeError("no JSON object found in response", text or "", 0)
 
 
 # ---------------------------------------------------------------------------

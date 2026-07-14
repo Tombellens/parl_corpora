@@ -122,7 +122,7 @@ def annotate(cv_text: str, name: str) -> dict:
             {"role": "user",   "content": user_msg},
         ],
         model=config.MODEL_ANNOTATE_D,
-        max_tokens=256,
+        max_tokens=1024,   # headroom for reasoning-model output before the JSON
     )
     result = extract_json(response)
 
