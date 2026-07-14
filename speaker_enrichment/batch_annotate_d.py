@@ -64,6 +64,9 @@ sector numbers that apply:
     bureaucrats at national, sub-national and local level; heads and staff of
     non-ministerial public bodies; prefects/governors; non-political
     administration of parliament.
+    NOTE: this is administrative / civil-service work only. Public-sector
+    TEACHERS and academics, DOCTORS and health workers, and public
+    BROADCASTERS belong to 3, NOT 2.
 3 = Public sector organisations and industries: state-owned or public bodies and
     enterprises — finance/central bank, transport, utilities, telecom/postal,
     public broadcasting, public healthcare, public education and research (school,
@@ -90,9 +93,14 @@ sector numbers that apply:
 
 Rules:
 - Include a sector number if the CV shows the person worked in it at any point.
+- Assign a sector only for a SUBSTANTIVE job or occupation the person actually
+  held. Do NOT assign a sector merely for an honorary position, a board or
+  committee membership, a patronage, a decoration, or a ceremonial / one-off
+  role.
 - Do NOT code the person's own national parliamentary mandate (being an MP /
   member of the national parliament). It is constant across everyone and must be
-  excluded. Other political office still counts under 4.
+  excluded. Other, genuine political office (mayor, councillor, MEP, party
+  functionary, political employment) still counts under 4.
 - Base sectors only on what the CV states. Do NOT infer experience with no basis.
 - Return each number at most once.
 - If the CV shows no codeable professional experience outside the national

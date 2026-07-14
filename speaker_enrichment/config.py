@@ -66,7 +66,7 @@ PROMPT_VERSION_SYNTHESIZE_CV  = "1.0"
 PROMPT_VERSION_ANNOTATE_A     = "1.0"
 PROMPT_VERSION_ANNOTATE_B     = "2.1"   # PartyFacts-ID anchored; affiliation via roles; dates as switch boundaries
 PROMPT_VERSION_ANNOTATE_C     = "3.0"   # tertiary-only, ISCED levels; highest_isced computed in code
-PROMPT_VERSION_ANNOTATE_D     = "3.1"   # first-digit (1-8) sector groups; national MP mandate excluded
+PROMPT_VERSION_ANNOTATE_D     = "3.2"   # + sharper 2/3 boundary; substantive-role-only rule
 
 # ---------------------------------------------------------------------------
 # Batch sizes
