@@ -62,6 +62,10 @@ Return a single JSON object:
   "unclear_or_none"         : no identifiable target, or purely rhetorical
 
 Rules:
+- The target is WHO OR WHAT IS ACCUSED of lying / untruth / being wrong — not the
+  audience being addressed or informed (e.g. "the House", "the public"), and not
+  a person merely cited as evidence. If X "told the public the untruth", the
+  target is X, not the public.
 - Judge only the accusation sentence (marked ">>>"); use the other lines only to
   understand who/what it refers to.
 - A name (or party) followed by a colon at the start of a line — e.g.
