@@ -26,13 +26,13 @@ CONTEXT_WINDOW   = 3             # sentences of context on each side (same speec
 # LM Studio (reuses the hardened client from ../speaker_enrichment)
 # ---------------------------------------------------------------------------
 MODEL              = "openai/gpt-oss-20b"
-LLM_CONTEXT_LENGTH = 8192        # small: accusation + context batches, not full CVs
-LLM_NUM_PARALLEL   = 4           # inputs are tiny, so we can afford parallel slots
+LLM_CONTEXT_LENGTH = 16384       # holds a batch of accusation+context items
+LLM_NUM_PARALLEL   = 1           # one batched prompt at a time (crash-recovery safe)
 PROMPT_VERSION     = "1.0"
 
-# Batch sizes
-TARGET_BATCH_ACCUSATIONS = 20    # accusations classified per LLM call (throughput)
-TARGET_MAX_TOKENS        = 1400  # room for a JSON array of ~20 short results
+# Batch sizes — many small accusations per call is the throughput lever
+TARGET_BATCH_ACCUSATIONS = 30    # accusations classified per LLM call
+TARGET_MAX_TOKENS        = 2200  # room for a JSON array of ~30 short results
 
 # ---------------------------------------------------------------------------
 # Target taxonomy (Phase 1). Broad by design.
