@@ -26,8 +26,14 @@ CONTEXT_WINDOW   = 3             # sentences of context on each side (same speec
 # LM Studio (reuses the hardened client from ../speaker_enrichment)
 # ---------------------------------------------------------------------------
 MODEL              = "openai/gpt-oss-20b"
-LLM_CONTEXT_LENGTH = 16384       # holds a batch of accusation+context items
-LLM_NUM_PARALLEL   = 1           # one batched prompt at a time (crash-recovery safe)
+# One accusation per call (full reasoning), throughput via CONCURRENCY:
+# load N parallel slots and fire N single-accusation requests at once. LM Studio
+# splits the context across slots, so total context = per-slot budget * parallel.
+# 32768 / 8 = 4096 tokens per request — plenty for one accusation + full
+# reasoning + a tiny JSON object.
+LLM_CONTEXT_LENGTH = 32768
+LLM_NUM_PARALLEL   = 8           # concurrent sequence slots
+N_WORKERS          = 8           # concurrent request threads (match parallel slots)
 PROMPT_VERSION     = "1.0"
 
 # Constants required by the shared llm_client (../speaker_enrichment/llm_client.py).
@@ -41,9 +47,9 @@ LMS_BIN                    = os.path.expanduser("~/.lmstudio/bin/lms")
 LMS_SERVER_STARTUP_TIMEOUT = 60
 LLM_LOCK_FILE              = "/home/tom/data/speaker_enrichment/llm.lock"
 
-# Batch sizes — many small accusations per call is the throughput lever
-TARGET_BATCH_ACCUSATIONS = 30    # accusations classified per LLM call
-TARGET_MAX_TOKENS        = 2200  # room for a JSON array of ~30 short results
+# One accusation per call; generous cap so full reasoning + the small JSON fit.
+TARGET_MAX_TOKENS        = 3000
+FETCH_CHUNK              = 200    # pending rows pulled per dispatch round
 
 # ---------------------------------------------------------------------------
 # Target taxonomy (Phase 1). Broad by design.

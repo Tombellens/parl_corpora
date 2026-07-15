@@ -15,11 +15,19 @@ The lock file is JSON:
 import json
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 
 import requests
 from openai import OpenAI
+
+# Serialises crash/server recovery across concurrent chat() callers so N threads
+# hitting a crash at once don't stampede into N model reloads. A recovery within
+# the cooldown window satisfies all waiters.
+_recovery_lock = threading.Lock()
+_last_recovery_ts = 0.0
+_RECOVERY_COOLDOWN = 30.0
 
 from config import (
     LM_STUDIO_BASE_URL, LM_STUDIO_API_KEY, LLM_LOCK_FILE,
@@ -339,6 +347,23 @@ def _is_server_down(err: str) -> bool:
     )
 
 
+def _recover(server_down: bool) -> None:
+    """
+    Concurrency-safe recovery: restart the server (if down) and/or reload the
+    model, but only once per cooldown window even if many threads call in at
+    once. Threads that arrive during another thread's recovery just wait for the
+    lock, see the recent recovery, and return to retry their request.
+    """
+    global _last_recovery_ts
+    with _recovery_lock:
+        if time.time() - _last_recovery_ts < _RECOVERY_COOLDOWN:
+            return                      # another thread just recovered
+        if server_down:
+            ensure_server_up()
+        reload_last_model()
+        _last_recovery_ts = time.time()
+
+
 def chat(messages: list[dict], model: str, temperature: float = 0,
          max_tokens: int = 4096, max_attempts: int = 4, **kwargs) -> str:
     """
@@ -365,21 +390,17 @@ def chat(messages: list[dict], model: str, temperature: float = 0,
                 raise
             err = str(e)
             if _is_server_down(err):
-                # The server process itself died — restart it (headless) and
-                # reload the model before retrying. This is what turned a single
-                # server death into 20k+ 'Connection error' failures before.
+                # Server process died — restart (headless) + reload, coalesced
+                # across concurrent callers. This is what turned a single server
+                # death into 20k+ 'Connection error' failures before.
                 print(f"  LLM server down (attempt {attempt+1}/{max_attempts}) "
-                      f"— restarting server: {err[:120]}")
-                if ensure_server_up():
-                    reload_last_model()
-                    time.sleep(2)
-                else:
-                    time.sleep(15)   # give a manual restart a chance
+                      f"— recovering: {err[:120]}")
+                _recover(server_down=True)
+                time.sleep(2)
             elif _is_crash_or_fallback(err):
                 print(f"  LLM crash/fallback detected (attempt {attempt+1}/{max_attempts}) "
-                      f"— reloading model: {err[:120]}")
-                time.sleep(3)
-                reload_last_model()
+                      f"— recovering: {err[:120]}")
+                _recover(server_down=False)
                 time.sleep(2)
             else:
                 print(f"  LLM call failed (attempt {attempt+1}/{max_attempts}): {e} — retrying in 5s")
