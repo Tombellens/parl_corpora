@@ -37,9 +37,13 @@ from llm_client import (  # noqa: E402
 SYSTEM_PROMPT = """You identify the TARGET of an accusation of lying or untruth
 made in parliamentary debate.
 
-You are given a short excerpt from a speech in which ONE sentence — the
-accusation — is marked with ">>>". The surrounding lines are context only.
-Decide to WHOM or WHAT the accusation (the ">>>" sentence) is directed.
+You are given a short excerpt of consecutive sentences from a debate. Lines are
+grouped under the speaker who said them, shown in brackets like "[Maria Fekter]".
+ONE sentence — the accusation — is marked with ">>>"; the speaker whose block it
+sits in is the ACCUSER. The preceding lines (which may be an earlier speaker's
+turn) are context. Decide to WHOM or WHAT the accusation (the ">>>" sentence) is
+directed. The person speaking in the turn just before the accuser is often the
+target (e.g. the accusation answers what they just said).
 
 Return a single JSON object:
   {"target_type": "<type>", "target_text": "<mention>"}

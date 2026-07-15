@@ -21,7 +21,8 @@ DB_PATH          = f"{TARGET_DIR}/accusations.db"
 SPEAKER_NAMES    = f"{DATA_DIR}/speaker_names.csv"               # corpus speakers + name_cleaned
 
 ACCUSATION_LABEL = "LABEL_1"     # lielines label marking a lie/untruth accusation
-CONTEXT_WINDOW   = 3             # sentences of context on each side (same speech)
+PREV_CONTEXT_SENTENCES = 8       # previous sentences to include (crosses turns);
+                                 # each line labelled with its speaker's full name
 
 # ---------------------------------------------------------------------------
 # LM Studio (reuses the hardened client from ../speaker_enrichment)
