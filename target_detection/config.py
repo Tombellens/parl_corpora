@@ -33,7 +33,8 @@ MODEL              = "openai/gpt-oss-20b"
 # splits the context across slots, so total context = per-slot budget * parallel.
 # 32768 / 8 = 4096 tokens per request — plenty for one accusation + full
 # reasoning + a tiny JSON object.
-LLM_CONTEXT_LENGTH = 32768
+LLM_CONTEXT_LENGTH = 65536       # 8 parallel slots -> 8192 tokens each: room for
+                                 # the labelled context + full reasoning + JSON
 LLM_NUM_PARALLEL   = 8           # concurrent sequence slots
 N_WORKERS          = 8           # concurrent request threads (match parallel slots)
 PROMPT_VERSION     = "1.0"
@@ -49,8 +50,9 @@ LMS_BIN                    = os.path.expanduser("~/.lmstudio/bin/lms")
 LMS_SERVER_STARTUP_TIMEOUT = 60
 LLM_LOCK_FILE              = "/home/tom/data/speaker_enrichment/llm.lock"
 
-# One accusation per call; generous cap so full reasoning + the small JSON fit.
-TARGET_MAX_TOKENS        = 3000
+# One accusation per call; generous cap so full reasoning + the small JSON fit
+# (per-slot budget is 8192, so this leaves ample headroom over the prompt).
+TARGET_MAX_TOKENS        = 4500
 FETCH_CHUNK              = 200    # pending rows pulled per dispatch round
 
 # ---------------------------------------------------------------------------
