@@ -18,6 +18,7 @@ DATA_DIR         = "/home/tom/data"
 PREDICTED_CSV    = f"{DATA_DIR}/sentence_corpus_predicted.csv"   # lielines output (149M rows)
 TARGET_DIR       = f"{DATA_DIR}/target_detection"
 DB_PATH          = f"{TARGET_DIR}/accusations.db"
+SPEAKER_NAMES    = f"{DATA_DIR}/speaker_names.csv"               # corpus speakers + name_cleaned
 
 ACCUSATION_LABEL = "LABEL_1"     # lielines label marking a lie/untruth accusation
 CONTEXT_WINDOW   = 3             # sentences of context on each side (same speech)
