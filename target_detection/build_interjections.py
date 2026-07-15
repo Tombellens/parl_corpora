@@ -25,6 +25,7 @@ Usage:
 import argparse
 import re
 from collections import defaultdict
+from difflib import SequenceMatcher
 
 import pandas as pd
 
@@ -97,21 +98,40 @@ def _load_speaker_index():
     return by_parl, pad2name
 
 
+FUZZY_THRESHOLD = 0.82   # min surname similarity for a fuzzy accuser match
+FUZZY_MARGIN    = 0.05   # best must beat the runner-up by this much
+
+
 def _resolve_accuser(surname, country, dataset, date, by_parl):
-    """Return (speaker_id, name, match) matching surname in the same parliament
-    and active period. match in {'resolved','ambiguous','unresolved'}."""
+    """Return (speaker_id, name, match) for a surname in the same parliament and
+    active period. match in {'resolved','fuzzy','ambiguous','unresolved'}.
+    Exact surname match is preferred; a high-confidence fuzzy match recovers
+    translation/spelling variants (e.g. 'Applebeck' -> 'Apfelbeck')."""
     cands = by_parl.get((country, dataset), [])
     d = (date or "")[:10]
-    hits = []
+
+    def in_period(lo, hi):
+        return not (d and lo and hi) or (lo[:10] <= d <= hi[:10])
+
+    exact = [(sid, name) for sid, name, sn, lo, hi in cands
+             if sn == surname and in_period(lo, hi)]
+    if len(exact) == 1:
+        return exact[0][0], exact[0][1], "resolved"
+    if len(exact) > 1:
+        return None, None, "ambiguous"
+
+    # Fuzzy fallback among date-valid candidates, unique clear best only.
+    scored = []
     for sid, name, sn, lo, hi in cands:
-        if sn != surname:
+        if not sn or not in_period(lo, hi):
             continue
-        if d and lo and hi and not (lo[:10] <= d <= hi[:10]):
-            continue                       # active-period filter
-        hits.append((sid, name))
-    if len(hits) == 1:
-        return hits[0][0], hits[0][1], "resolved"
-    if len(hits) > 1:
+        r = SequenceMatcher(None, surname, sn).ratio()
+        if r >= FUZZY_THRESHOLD:
+            scored.append((r, sid, name))
+    if scored:
+        scored.sort(key=lambda x: x[0], reverse=True)
+        if len(scored) == 1 or (scored[0][0] - scored[1][0]) >= FUZZY_MARGIN:
+            return scored[0][1], scored[0][2], "fuzzy"
         return None, None, "ambiguous"
     return None, None, "unresolved"
 
@@ -164,10 +184,11 @@ def main():
         ))
 
     print(f"\n{n_int:,} interjection accusations found")
-    print(f"  accuser resolved   : {stats['resolved']:,}")
-    print(f"  accuser ambiguous  : {stats['ambiguous']:,}")
-    print(f"  accuser unresolved : {stats['unresolved']:,}")
-    print(f"  (parsed == host)   : {stats['matches_host']:,}")
+    print(f"  accuser resolved (exact) : {stats['resolved']:,}")
+    print(f"  accuser resolved (fuzzy) : {stats['fuzzy']:,}")
+    print(f"  accuser ambiguous        : {stats['ambiguous']:,}")
+    print(f"  accuser unresolved       : {stats['unresolved']:,}")
+    print(f"  (parsed == host)         : {stats['matches_host']:,}")
 
     if args.dry_run:
         print("\n--dry-run: no writes.")
