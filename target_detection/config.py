@@ -30,6 +30,17 @@ LLM_CONTEXT_LENGTH = 16384       # holds a batch of accusation+context items
 LLM_NUM_PARALLEL   = 1           # one batched prompt at a time (crash-recovery safe)
 PROMPT_VERSION     = "1.0"
 
+# Constants required by the shared llm_client (../speaker_enrichment/llm_client.py).
+# It does `from config import ...`, and because this module's directory is first
+# on sys.path these names must live here too. They point at the same LM Studio
+# server; the lock file is SHARED with speaker_enrichment so the two pipelines
+# cannot both grab the single GPU at once.
+LM_STUDIO_BASE_URL         = "http://localhost:1234"
+LM_STUDIO_API_KEY          = "lm-studio"
+LMS_BIN                    = os.path.expanduser("~/.lmstudio/bin/lms")
+LMS_SERVER_STARTUP_TIMEOUT = 60
+LLM_LOCK_FILE              = "/home/tom/data/speaker_enrichment/llm.lock"
+
 # Batch sizes — many small accusations per call is the throughput lever
 TARGET_BATCH_ACCUSATIONS = 30    # accusations classified per LLM call
 TARGET_MAX_TOKENS        = 2200  # room for a JSON array of ~30 short results
