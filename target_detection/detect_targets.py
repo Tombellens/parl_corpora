@@ -60,6 +60,11 @@ Return a single JSON object:
 Rules:
 - Judge only the accusation sentence (marked ">>>"); use the other lines only to
   understand who/what it refers to.
+- A name (or party) followed by a colon at the start of a line — e.g.
+  "Dr. Fekter:" or "Wabl:" — marks the SPEAKER of that interjection, NOT the
+  target. That person is the one making the accusation. When the accusation is
+  such an interjection, the target is whoever/whatever it responds to, usually
+  named in the preceding context — not the speaker before the colon.
 - "target_text" = the target as written (e.g. "the government", "Russia",
   "the Social Democrats"); use "" for unclear_or_none.
 - Base the answer only on the text. Do not guess a target that is not supported.
