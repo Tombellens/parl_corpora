@@ -32,7 +32,13 @@ import config
 from db import get_conn, init_db, now_iso, SUCCESS
 
 # Prefix like "Dr. Fekter:", "Federal Minister Dr. Fassleven:", "Tichy-Schreder:"
-PREFIX_RE = re.compile(r"^([A-ZÄÖÜ][A-Za-zÄÖÜäöüß.'\- ]{1,40}):\s")
+# Require a NAME: every token capitalised (or a known lowercase particle), up to
+# 5 tokens. This rejects reported speech / normal sentences that merely contain a
+# capitalised word before a colon ("He wrote:", "Call to the liberals:",
+# "Mrs Reitsamer said:").
+_NAME_TOK = r"[A-ZÄÖÜ][A-Za-zÄÖÜäöüß.'\-]*"
+_PARTICLE = r"von|van|de|der|den|zu|di|da"
+PREFIX_RE = re.compile(rf"^({_NAME_TOK}(?:\s+(?:{_NAME_TOK}|{_PARTICLE})){{0,4}}):\s")
 
 # Honorifics / titles to strip before taking the surname.
 TITLE_RE = re.compile(
