@@ -33,10 +33,12 @@ MODEL              = "openai/gpt-oss-20b"
 # splits the context across slots, so total context = per-slot budget * parallel.
 # 32768 / 8 = 4096 tokens per request — plenty for one accusation + full
 # reasoning + a tiny JSON object.
-LLM_CONTEXT_LENGTH = 65536       # 8 parallel slots -> 8192 tokens each: room for
-                                 # the labelled context + full reasoning + JSON
-LLM_NUM_PARALLEL   = 8           # concurrent sequence slots
-N_WORKERS          = 8           # concurrent request threads (match parallel slots)
+LLM_CONTEXT_LENGTH = 65536       # 3 slots -> ~21.8k tokens each: huge headroom
+                                 # over the ~1k input + 4500 output.
+# The model crashes under high concurrency (8 simultaneous requests took it
+# down); 4 was stable, so we run 3 for margin on the long unattended run.
+LLM_NUM_PARALLEL   = 3           # concurrent sequence slots
+N_WORKERS          = 3           # concurrent request threads (match parallel slots)
 PROMPT_VERSION     = "1.0"
 
 # Constants required by the shared llm_client (../speaker_enrichment/llm_client.py).

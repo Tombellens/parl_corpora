@@ -86,12 +86,6 @@ def classify_one(row: dict) -> tuple[str, str]:
         f"{row['context'] or row['sentence']}\n\n"
         "Classify the target of the accusation:"
     )
-    # Diagnostic: log the actual size going to the LLM (system + user).
-    ctx_chars = len(row["context"] or "")
-    total_chars = len(SYSTEM_PROMPT) + len(user_msg)
-    tqdm.write(f"[len] id={row['id']} ctx_chars={ctx_chars} "
-               f"total_chars={total_chars} ~tokens={total_chars // 4} "
-               f"max_tokens={config.TARGET_MAX_TOKENS}")
     response = chat(
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
