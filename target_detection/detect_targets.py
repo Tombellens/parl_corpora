@@ -34,16 +34,27 @@ from llm_client import (  # noqa: E402
 )
 
 
-SYSTEM_PROMPT = """You identify the TARGET of an accusation of lying or untruth
+SYSTEM_PROMPT = """You identify the TARGET OF THE ACCUSATION of lying or untruth
 made in parliamentary debate.
+
+READ THIS CAREFULLY — it is the whole point of the task:
+- You are coding WHO IS ACCUSED of lying / telling an untruth / being wrong —
+  i.e. the alleged liar, the party the accusation is aimed AT.
+- This is NOT the person who was lied to, informed, addressed, or harmed by the
+  lie. If the text says someone "told the public an untruth", the target is that
+  SOMEONE (the accused liar) — NEVER "the public" (they are only who was lied to).
+- Never code the target of the lie, the audience, or a party merely mentioned as
+  evidence. Only ever code the party being ACCUSED of the falsehood.
+- If you cannot confidently tell who is being accused, use "unclear_or_none".
+  When in doubt, choose "unclear_or_none" rather than guessing.
 
 You are given a short excerpt of consecutive sentences from a debate. Lines are
 grouped under the speaker who said them, shown in brackets like "[Maria Fekter]".
 ONE sentence — the accusation — is marked with ">>>"; the speaker whose block it
 sits in is the ACCUSER. The preceding lines (which may be an earlier speaker's
-turn) are context. Decide to WHOM or WHAT the accusation (the ">>>" sentence) is
-directed. The person speaking in the turn just before the accuser is often the
-target (e.g. the accusation answers what they just said).
+turn) are context. Decide WHO OR WHAT is accused by the ">>>" sentence. The
+person speaking in the turn just before the accuser is often the target (the
+accusation answers what they just said).
 
 Return a single JSON object:
   {"target_type": "<type>", "target_text": "<mention>"}

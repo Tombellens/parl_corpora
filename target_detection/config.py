@@ -39,7 +39,7 @@ LLM_CONTEXT_LENGTH = 65536       # 3 slots -> ~21.8k tokens each: huge headroom
 # down); 4 was stable, so we run 3 for margin on the long unattended run.
 LLM_NUM_PARALLEL   = 3           # concurrent sequence slots
 N_WORKERS          = 3           # concurrent request threads (match parallel slots)
-PROMPT_VERSION     = "1.0"
+PROMPT_VERSION     = "1.1"   # emphasise: target OF THE ACCUSATION, not of the lie; unsure -> unclear
 
 # Constants required by the shared llm_client (../speaker_enrichment/llm_client.py).
 # It does `from config import ...`, and because this module's directory is first
