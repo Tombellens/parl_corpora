@@ -68,12 +68,23 @@ def _ensure_columns():
 
 
 def _surname(name: str) -> str:
-    """Strip titles, return the lowercased surname (last whitespace token)."""
-    n = name.strip()
-    prev = None
-    while n != prev:                       # strip stacked titles
-        prev = n
-        n = TITLE_RE.sub("", n).strip()
+    """Return the lowercased surname.
+
+    Handles two name orders:
+      - "Firstname Surname" / "Dr. Surname"  -> strip titles, take last token
+      - "Surname, Firstname [(role)]"        -> surname is the part before the
+        comma (e.g. australian-hansard "Abbott, Tony" -> "abbott")
+    """
+    n = (name or "").strip()
+    if not n:
+        return ""
+    if "," in n:
+        n = n.split(",", 1)[0].strip()     # comma order: surname before the comma
+    else:
+        prev = None
+        while n != prev:                   # strip stacked titles
+            prev = n
+            n = TITLE_RE.sub("", n).strip()
     n = n.strip(".,;:").strip()
     if not n:
         return ""
