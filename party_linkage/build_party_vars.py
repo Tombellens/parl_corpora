@@ -70,26 +70,36 @@ def load_elections():
 
 
 def load_cabinets():
-    """Cabinet timeline. Returns (starts, gov_sets, pm) parallel lists sorted by
-    start_date: starts[i]=date, gov_sets[i]=set(party_id in cabinet),
-    pm[i]=party_id of the PM party."""
+    """Per-country cabinet timelines. Returns:
+      by_country : {country_id: (starts, gov_sets, pm)} each sorted by start_date
+      party2country : {parlgov party_id: country_id}
+    The lookup MUST be country-scoped — a global timeline would pick another
+    country's cabinet as 'active' and wrongly report the party out of government.
+    """
     c = pd.read_csv(config.CABINET_CSV, low_memory=False)
-    cabs = {}
+    cabs = {}                     # (country_id, cabinet_id) -> {start, gov, pm}
+    party2country = {}
     for r in c.itertuples(index=False):
         d = _d(r.start_date)
         if d is None:
             continue
-        rec = cabs.setdefault(int(r.cabinet_id), {"start": d, "gov": set(), "pm": None})
-        pid = int(r.party_id)
+        cid, cabid, pid = int(r.country_id), int(r.cabinet_id), int(r.party_id)
+        party2country[pid] = cid
+        rec = cabs.setdefault((cid, cabid), {"start": d, "gov": set(), "pm": None})
         if int(r.cabinet_party or 0) == 1:
             rec["gov"].add(pid)
         if int(r.prime_minister or 0) == 1:
             rec["pm"] = pid
-    ordered = sorted(cabs.values(), key=lambda v: v["start"])
-    starts = [v["start"] for v in ordered]
-    gov_sets = [v["gov"] for v in ordered]
-    pm = [v["pm"] for v in ordered]
-    return starts, gov_sets, pm
+    grouped = {}
+    for (cid, _cabid), rec in cabs.items():
+        grouped.setdefault(cid, []).append(rec)
+    by_country = {}
+    for cid, lst in grouped.items():
+        lst.sort(key=lambda v: v["start"])
+        by_country[cid] = ([v["start"] for v in lst],
+                           [v["gov"] for v in lst],
+                           [v["pm"] for v in lst])
+    return by_country, party2country
 
 
 def load_vparty():
@@ -167,7 +177,11 @@ def election_vars(pid, D, elec):
     return (last, avg, avg3, delta)
 
 
-def cabinet_vars(pid, D, starts, gov_sets, pm):
+def cabinet_vars(pid, D, cab_by_country, party2country):
+    cid = party2country.get(pid)
+    if cid is None or cid not in cab_by_country:
+        return (None, None, None)
+    starts, gov_sets, pm = cab_by_country[cid]
     i = bisect.bisect_right(starts, D) - 1
     if i < 0:
         return (None, None, None)
@@ -179,7 +193,7 @@ def cabinet_vars(pid, D, starts, gov_sets, pm):
     while j >= 0 and pid not in gov_sets[j]:
         j -= 1
     if j < 0:
-        return (0, is_pm, None)          # never in government before D
+        return (0, is_pm, None)          # never in government before D (this country)
     exit_date = starts[j + 1]            # first cabinet after the last gov spell
     yrs = (date.fromisoformat(D) - date.fromisoformat(exit_date)).days / 365.25
     return (0, is_pm, round(yrs, 2))
@@ -224,11 +238,11 @@ def main():
     print("Loading reference data ...")
     xwalk = load_crosswalk_parlgov()
     elec  = load_elections()
-    starts, gov_sets, pm = load_cabinets()
+    cab_by_country, party2country = load_cabinets()
     vp    = load_vparty()
     bridge = load_bridge()
     print(f"  crosswalk parlgov: {len(xwalk):,} | election parties: {len(elec):,} | "
-          f"cabinets: {len(starts):,} | vparty parties: {len(vp):,} | "
+          f"cabinet countries: {len(cab_by_country):,} | vparty parties: {len(vp):,} | "
           f"bridge speakers: {len(bridge):,}")
 
     con = sqlite3.connect(config.ACC_DB)
@@ -263,7 +277,7 @@ def main():
         pfid = int(p["partyfacts_id"])
         pg_id = xwalk.get(pfid)
         ev = election_vars(pg_id, D, elec) if pg_id else (None, None, None, None)
-        cv = cabinet_vars(pg_id, D, starts, gov_sets, pm) if pg_id else (None, None, None)
+        cv = cabinet_vars(pg_id, D, cab_by_country, party2country) if pg_id else (None, None, None)
         vv = vparty_vars(pfid, D, vp)
         stats["resolved"] += 1
         batch.append((
