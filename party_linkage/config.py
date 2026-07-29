@@ -18,3 +18,11 @@ ACC_DB        = f"{DATA_DIR}/target_detection/accusations.db"
 
 # ParlGov election_type value for national parliamentary elections
 NATIONAL_ELECTION = "parliament"
+
+# Lielines-scored sentence corpus (source for the full-corpus dataset)
+PREDICTED_CSV = f"{DATA_DIR}/sentence_corpus_predicted.csv"
+
+# Analysis-ready outputs
+ANALYSIS_DIR        = f"{DATA_DIR}/analysis"
+ACCUSATION_PARQUET  = f"{ANALYSIS_DIR}/accusations_dataset.parquet"
+FULL_CORPUS_PARQUET = f"{ANALYSIS_DIR}/full_corpus_dataset.parquet"
