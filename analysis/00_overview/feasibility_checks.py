@@ -191,5 +191,32 @@ def part_b():
 
 
 if __name__ == "__main__":
-    part_a()
-    part_b()
+    import argparse
+    import contextlib
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--part", choices=["a", "b", "all"], default="all",
+                    help="run only Part A (polarity) or Part B (H3d feasibility)")
+    ap.add_argument("--out", default="feasibility_report.txt",
+                    help="write the report here as well as to the terminal "
+                         "(default: feasibility_report.txt)")
+    args = ap.parse_args()
+
+    def run():
+        if args.part in ("a", "all"):
+            part_a()
+        if args.part in ("b", "all"):
+            part_b()
+
+    with open(args.out, "w") as fh:
+        class _Tee:
+            def write(self, s):
+                sys.__stdout__.write(s)
+                fh.write(s)
+            def flush(self):
+                sys.__stdout__.flush()
+                fh.flush()
+        with contextlib.redirect_stdout(_Tee()):
+            run()
+
+    print(f"\n[report written to {args.out}]", file=sys.__stderr__)
