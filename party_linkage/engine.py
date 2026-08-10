@@ -21,7 +21,7 @@ import pandas as pd
 import config
 from build_party_vars import (
     _d, load_crosswalk_parlgov, load_elections, load_cabinets, load_vparty,
-    party_at_year, election_vars, cabinet_vars, vparty_vars,
+    party_at_year, election_vars, cabinet_vars, vparty_vars, VPARTY_MEASURES,
 )
 
 # Output variable keys (the flat schema returned by vars_for)
@@ -31,8 +31,7 @@ VAR_KEYS = [
     "partyfacts_id", "party_name",
     "vote_share_last", "vote_share_avg", "vote_share_avg_last3", "vote_share_delta",
     "in_cabinet", "is_pm_party", "years_since_government",
-    "left_right", "populism", "anti_elitism", "people_centrism",
-]
+] + VPARTY_MEASURES
 
 
 def _load_speakers_full():
@@ -130,8 +129,7 @@ class Engine:
             (out["vote_share_last"], out["vote_share_avg"],
              out["vote_share_avg_last3"], out["vote_share_delta"]) = ev
             out["in_cabinet"], out["is_pm_party"], out["years_since_government"] = cv
-            (out["left_right"], out["populism"],
-             out["anti_elitism"], out["people_centrism"]) = vv
+            out.update(vv)
             out["match"] = "resolved"
         else:
             out["match"] = "no_party"

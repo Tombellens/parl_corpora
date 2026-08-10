@@ -26,9 +26,36 @@ import json
 import sqlite3
 from datetime import date
 
+import numpy as np
 import pandas as pd
 
 import config
+
+# ---------------------------------------------------------------------------
+# V-Party measures carried into the datasets, in output order.
+# ---------------------------------------------------------------------------
+VPARTY_MEASURES = [
+    "left_right",             # v2pariglef — ECONOMIC left-right (higher = right)
+    "populism",               # v2xpa_popul
+    "anti_elitism",           # v2paanteli
+    "people_centrism",        # v2papeople
+    "cultural_conservatism",  # index of the 5 items below (higher = conservative)
+    "anti_pluralism",         # v2xpa_antiplural (called v2xpa_illiberal in v1)
+    "demonize_opponents",     # v2paopresp
+]
+
+# Cultural dimension item set follows Medzihorsky & Lindberg (2024, Party
+# Politics). Every item is coded LOW = conservative/opposed, HIGH = progressive/
+# supportive, so the index is sign-flipped to read higher = more conservative.
+CULTURAL_ITEMS = ["v2paimmig", "v2palgbt", "v2paculsup", "v2parelig", "v2pawomlab"]
+
+_DIRECT = {
+    "left_right":         "v2pariglef",
+    "populism":           "v2xpa_popul",
+    "anti_elitism":       "v2paanteli",
+    "people_centrism":    "v2papeople",
+    "demonize_opponents": "v2paopresp",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -103,15 +130,46 @@ def load_cabinets():
 
 
 def load_vparty():
-    """partyfacts_id -> sorted [(date, left_right, populism, anti_eli, people)]."""
+    """partyfacts_id -> sorted [(date, {measure: value})] for VPARTY_MEASURES."""
     v = pd.read_csv(config.VPARTY_CSV, low_memory=False)
+    have = set(v.columns)
+
+    def num(col):
+        return (pd.to_numeric(v[col], errors="coerce") if col in have
+                else pd.Series(np.nan, index=v.index))
+
+    vals = {m: num(src) for m, src in _DIRECT.items()}
+    # anti-pluralism was renamed between V-Party v1 and v2
+    vals["anti_pluralism"] = num("v2xpa_antiplural" if "v2xpa_antiplural" in have
+                                 else "v2xpa_illiberal")
+
+    # cultural index: mean of z-scored items, flipped so higher = conservative
+    items = [c for c in CULTURAL_ITEMS if c in have]
+    if items:
+        z = pd.DataFrame({c: num(c) for c in items})
+        z = (z - z.mean()) / z.std()
+        cult = -z.mean(axis=1)
+        cult[z.notna().sum(axis=1) < 3] = np.nan      # need >= 3 of the 5 items
+        vals["cultural_conservatism"] = cult
+        print(f"  cultural index from {len(items)}/5 items, "
+              f"{int(cult.notna().sum()):,} party-elections covered")
+    else:
+        vals["cultural_conservatism"] = pd.Series(np.nan, index=v.index)
+        print("  WARNING: no cultural items present — cultural_conservatism is null")
+
+    missing = [m for m in VPARTY_MEASURES if vals[m].notna().sum() == 0]
+    if missing:
+        print(f"  WARNING: no data for {missing}")
+
+    pf = pd.to_numeric(v["pf_party_id"], errors="coerce")
+    dates = v["historical_date"].astype(str).str[:10]
     by = {}
-    for r in v.itertuples(index=False):
-        if pd.isna(r.pf_party_id):
+    for i in range(len(v)):
+        if pd.isna(pf.iat[i]):
             continue
-        d = _d(r.historical_date)
-        by.setdefault(int(r.pf_party_id), []).append(
-            (d, r.v2pariglef, r.v2xpa_popul, r.v2paanteli, r.v2papeople))
+        rec = {m: (None if pd.isna(vals[m].iat[i]) else float(vals[m].iat[i]))
+               for m in VPARTY_MEASURES}
+        by.setdefault(int(pf.iat[i]), []).append((dates.iat[i], rec))
     for k in by:
         by[k].sort(key=lambda t: (t[0] or ""))
     return by
@@ -200,12 +258,12 @@ def cabinet_vars(pid, D, cab_by_country, party2country):
 
 
 def vparty_vars(pfid, D, vp):
+    """{measure: value} from the party's most recent election on/before D."""
     rows = vp.get(pfid, [])
     if not rows:
-        return (None, None, None, None)
+        return {m: None for m in VPARTY_MEASURES}
     prior = [r for r in rows if r[0] and r[0] <= D]
-    r = prior[-1] if prior else rows[0]
-    return (r[1], r[2], r[3], r[4])
+    return (prior[-1] if prior else rows[0])[1]
 
 
 SCHEMA = """
@@ -225,9 +283,14 @@ CREATE TABLE IF NOT EXISTS party_vars (
     left_right              REAL,
     populism                REAL,
     anti_elitism            REAL,
-    people_centrism         REAL
+    people_centrism         REAL,
+    cultural_conservatism   REAL,
+    anti_pluralism          REAL,
+    demonize_opponents      REAL
 );
 """
+
+N_NULL_TAIL = 7 + len(VPARTY_MEASURES)   # election(4) + cabinet(3) + V-Party
 
 
 def main():
@@ -266,12 +329,12 @@ def main():
         if not parties or not D:
             stats["no_speaker" if not parties else "no_party"] += 1
             batch.append((r["id"], None, "no_speaker" if not parties else "no_party",
-                          0, 0, *[None]*11))
+                          0, 0, *[None]*N_NULL_TAIL))
             continue
         p = party_at_year(parties, int(D[:4]))
         if not p or p.get("partyfacts_id") is None:
             stats["no_party"] += 1
-            batch.append((r["id"], None, "no_party", 0, 0, *[None]*11))
+            batch.append((r["id"], None, "no_party", 0, 0, *[None]*N_NULL_TAIL))
             continue
 
         pfid = int(p["partyfacts_id"])
@@ -285,11 +348,12 @@ def main():
             1 if pg_id else 0, 1 if pfid in vp else 0,
             ev[0], ev[1], ev[2], ev[3],
             cv[0], cv[1], cv[2],
-            vv[0], vv[1], vv[2], vv[3],
+            *[vv[m] for m in VPARTY_MEASURES],
         ))
 
+    n_cols = 5 + N_NULL_TAIL
     con.executemany(
-        "INSERT INTO party_vars VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", batch)
+        f"INSERT INTO party_vars VALUES ({','.join('?' * n_cols)})", batch)
     con.commit()
     con.close()
 
