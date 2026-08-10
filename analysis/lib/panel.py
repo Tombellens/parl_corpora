@@ -6,9 +6,10 @@ One row per (speaker_id, country, source_dataset, year):
   n_accusations_made       accusations made (accuser side, incl. interjections)
   n_accusations_received   accusations received (resolved targets only!)
   + individual covariates  gender, birth_year -> age, highest_isced, career_sectors
-  + party covariates       partyfacts_id, party_name, left_right, populism,
-                           anti_elitism, people_centrism, in_cabinet, is_pm_party,
-                           years_since_government, vote_share_last
+  + party covariates       partyfacts_id, party_name, left_right (ECONOMIC),
+                           cultural_conservatism, populism, anti_elitism,
+                           people_centrism, anti_pluralism, in_cabinet,
+                           is_pm_party, years_since_government, vote_share_last
 
 All accuser/accusee-side models are then count models on this table with
 offset(log(n_sentences)) and country/dataset/year fixed effects.
@@ -41,9 +42,11 @@ WITH corpus_agg AS (
         any_value(speaker_partyfacts_id)         AS partyfacts_id,
         any_value(speaker_party_name)            AS party_name,
         any_value(speaker_left_right)            AS left_right,
+        any_value(speaker_cultural_conservatism) AS cultural_conservatism,
         any_value(speaker_populism)              AS populism,
         any_value(speaker_anti_elitism)          AS anti_elitism,
         any_value(speaker_people_centrism)       AS people_centrism,
+        any_value(speaker_anti_pluralism)        AS anti_pluralism,
         any_value(speaker_in_cabinet)            AS in_cabinet,
         any_value(speaker_is_pm_party)           AS is_pm_party,
         any_value(speaker_years_since_government) AS years_since_government,
