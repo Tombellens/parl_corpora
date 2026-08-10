@@ -80,10 +80,14 @@ def assert_left_right_polarity(df, col="accuser_left_right", party_col="accuser_
         f"00_overview/feasibility_checks.py --part a before interpreting signs.")
     return {"left_mean": left, "right_mean": right}
 
-# Countries (ISO2) excluded from ALL analysis, mirroring the LieLines validation
-# sampler (LieLines-Validation/sample_random.py DEFAULT_EXCLUDE_COUNTRIES).
-# Iceland, Bosnia & Herzegovina, Greece, Latvia.
-EXCLUDED_COUNTRIES = {"IS", "BA", "GR", "LV"}
+# Countries (ISO2) excluded from ALL analysis.
+#   IS, BA, GR, LV — carried over from the LieLines validation sampler
+#                    (LieLines-Validation/sample_random.py).
+#   EE            — added 2026-08: machine-translation quality judged too poor
+#                    for the accusation classifier to be trusted.
+# Applied at load time by lib.data, so the parquets keep every country and this
+# set is the single place the decision lives. Rebuild the panel after editing.
+EXCLUDED_COUNTRIES = {"IS", "BA", "GR", "LV", "EE"}
 
 
 def sectors_to_labels(sectors):
