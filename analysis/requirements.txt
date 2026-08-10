@@ -1,0 +1,9 @@
+jupyterlab
+pandas
+polars
+duckdb
+pyarrow
+numpy
+matplotlib
+statsmodels
+nbstripout

@@ -1,0 +1,10 @@
+# notebook cruft
+.ipynb_checkpoints/
+__pycache__/
+
+# exported figures/tables — regenerable, keep out of git (commit selectively if needed)
+outputs/*
+!outputs/.gitkeep
+
+# local jupyter state
+.jupyter/
