@@ -109,25 +109,34 @@ def load_panel():
     return df
 
 
-def load_party_panel(credit="all_cabinet"):
+PARTY_TARGETS_PARQUET = data.ANALYSIS_DIR / "target_party_resolution.parquet"
+
+
+def load_party_panel(credit="none"):
     """PARTY-year panel: one row per (country, source_dataset, partyfacts_id, year).
 
-    Built for the accusee-side hypotheses (H2b, H4a, H4c), which are about party
+    Built for the accusee-side hypotheses (H2b, H4a, H4c), which concern party
     attributes and are broken at the individual level: the government recode moved
-    ~42k minister-targets from `person` to `government`, so governing-party MPs
-    have artificially depleted individual received-counts. Here those accusations
-    are credited back to the parties in cabinet.
+    ~42k minister-targets out of the person-level DV, so governing-party MPs have
+    artificially depleted individual received-counts.
 
-        acc_received = acc_recv_person + acc_recv_gov
+        acc_received = acc_recv_person + acc_recv_party
 
-    `credit` decides who receives an accusation aimed at "the government":
-        "all_cabinet" — every party in cabinet that year (default; an attack on
-                        the government is an attack on each governing party)
-        "pm_only"     — only the PM's party
-        "none"        — person-resolved accusations only (the old behaviour)
+    `acc_recv_party` comes from accusations whose TARGET was a named political
+    party, resolved to a PartyFacts id by party_linkage/resolve_party_targets.py.
+    This is the symmetric measure: governing and opposition parties are equally
+    nameable in text and were matched by the identical procedure.
 
-    With "all_cabinet" one accusation appears in several party-year rows, so
-    cluster SEs by country-year.
+    `credit` controls whether accusations aimed at "the government" as a bloc are
+    also added, and defaults to OFF:
+        "none"        — recommended. Party-directed + person-resolved only.
+        "all_cabinet" — adds the whole country-year government-target count to
+                        every cabinet party. DO NOT USE for hypothesis testing:
+                        it assigns a large block of accusations to incumbents by
+                        construction while the opposition keeps a censored DV,
+                        which produced an in_cabinet IRR of ~12 and flipped
+                        unrelated coefficients. Retained only for diagnostics.
+        "pm_only"     — same objection, smaller.
     """
     import numpy as np
     import pandas as pd
@@ -157,7 +166,27 @@ def load_party_panel(credit="all_cabinet"):
                  mean_isced=("highest_isced", "mean"))
             .reset_index())
 
-    # accusations aimed at "the government", by country-dataset-year
+    # --- accusations aimed at this party by name ----------------------------
+    if PARTY_TARGETS_PARQUET.exists():
+        pt = pd.read_parquet(PARTY_TARGETS_PARQUET,
+                             columns=["country", "source_dataset", "date",
+                                      "target_partyfacts_id"])
+        pt = pt.dropna(subset=["target_partyfacts_id"])
+        pt["year"] = pd.to_numeric(pt["date"].astype(str).str[:4], errors="coerce")
+        pt = pt.dropna(subset=["year"])
+        pt["partyfacts_id"] = pt["target_partyfacts_id"].astype("int64")
+        pt["year"] = pt["year"].astype("int64")
+        pt = (pt.groupby(["country", "source_dataset", "partyfacts_id", "year"])
+                .size().rename("acc_recv_party").reset_index())
+        pp = pp.merge(pt, on=["country", "source_dataset", "partyfacts_id", "year"],
+                      how="left")
+        pp["acc_recv_party"] = pp["acc_recv_party"].fillna(0)
+    else:
+        print(f"note: {PARTY_TARGETS_PARQUET.name} not found -- run "
+              f"party_linkage/resolve_party_targets.py; acc_recv_party = 0")
+        pp["acc_recv_party"] = 0
+
+    # accusations aimed at "the government", by country-dataset-year (diagnostic)
     con = data.duck()
     gov = con.execute("""
         SELECT country, source_dataset,
@@ -183,7 +212,8 @@ def load_party_panel(credit="all_cabinet"):
         raise ValueError(f"unknown credit rule: {credit}")
 
     pp["acc_recv_gov"] = np.where(gets_gov, pp["n_gov_targets"], 0)
-    pp["acc_received"] = pp["acc_recv_person"] + pp["acc_recv_gov"]
+    pp["acc_received"] = (pp["acc_recv_person"] + pp["acc_recv_party"]
+                          + pp["acc_recv_gov"])
 
     pp["log_exposure"] = np.log(pp["n_sentences"])
     pp["country_year"] = pp["country"] + "_" + pp["year"].astype(str)
