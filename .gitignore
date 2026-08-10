@@ -1,3 +1,6 @@
 /data
 /venv
 .claude/
+__pycache__/
+*.pyc
+analysis/feasibility_report.txt
