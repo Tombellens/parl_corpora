@@ -70,9 +70,40 @@ def norm(s):
     return _WS.sub(" ", s).strip()
 
 
+def _stem(w):
+    """Crude plural strip so 'conservatives' matches 'conservative'. Applied to
+    both sides, so it only needs to be consistent, not linguistically right."""
+    if len(w) > 4 and w.endswith("s") and not w.endswith("ss"):
+        return w[:-1]
+    return w
+
+
 def content_key(s):
-    """Normalised form with uninformative words removed."""
-    return " ".join(w for w in norm(s).split() if w not in STOP)
+    """Normalised form: uninformative words removed, plurals stemmed."""
+    return " ".join(_stem(w) for w in norm(s).split() if w not in STOP)
+
+
+# Bloc references: not resolvable to a party, but meaningful in their own right.
+# "the opposition" is the mirror image of target_type='government', which is what
+# makes a symmetric incumbent-vs-opposition comparison possible.
+BLOC_PATTERNS = [
+    ("opposition", re.compile(r"\b(the )?opposition\b|those opposite|"
+                              r"\bother side\b|opposite benches?", re.I)),
+    ("government", re.compile(r"\b(the )?government\b|treasury benches?|"
+                              r"\bcabinet\b", re.I)),
+    ("left", re.compile(r"\bthe left\b|\bleft wing\b|\bleftists?\b", re.I)),
+    ("right", re.compile(r"\bthe right\b|\bright wing\b|\brightists?\b", re.I)),
+]
+
+
+def classify_bloc(text):
+    """Return a bloc label for generic references, else None."""
+    if not text:
+        return None
+    for label, pat in BLOC_PATTERNS:
+        if pat.search(str(text)):
+            return label
+    return None
 
 
 def build_party_keys():
@@ -129,14 +160,32 @@ def resolve_one(text, country, year, by_country):
     if len(hits) > 1:
         return None, None, "ambiguous_exact"
 
-    # 2. containment — party name appears as a whole phrase in the target
-    hits = {pid for pid, k, _ in live
-            if len(k) >= MIN_KEY_LEN and re.search(rf"\b{re.escape(k)}\b", t_key)}
+    # 2. containment, BOTH directions.
+    #    party inside target : "he attacked the Labour Party today"
+    #    target inside party : "the People's Party" -> "Austrian People's Party"
+    #    The second case is the common one and was missing originally.
+    hits = {}
+    for pid, k, disp in live:
+        if len(k) < MIN_KEY_LEN or not t_key:
+            continue
+        if re.search(rf"\b{re.escape(k)}\b", t_key) or (
+                len(t_key) >= MIN_KEY_LEN
+                and re.search(rf"\b{re.escape(t_key)}\b", k)):
+            # keep the closest-length candidate per party
+            score = min(len(k), len(t_key)) / max(len(k), len(t_key))
+            if pid not in hits or score > hits[pid][0]:
+                hits[pid] = (score, disp)
+
     if len(hits) == 1:
-        pid = hits.pop()
-        disp = next(d for p, _, d in live if p == pid)
+        pid, (_, disp) = next(iter(hits.items()))
         return pid, disp, "contains"
     if len(hits) > 1:
+        # Several parties share the phrase (e.g. "Conservative" in Canada).
+        # Prefer the one closest in length to what was actually written; only
+        # accept it if it is clearly closer than the runner-up.
+        ranked = sorted(((s, pid, d) for pid, (s, d) in hits.items()), reverse=True)
+        if ranked[0][0] - ranked[1][0] >= 0.15:
+            return ranked[0][1], ranked[0][2], "contains"
         return None, None, "ambiguous_contains"
 
     # 3. fuzzy on the content key
@@ -187,14 +236,18 @@ def main():
     for r in df.itertuples(index=False):
         key = (r.country, r.target_text, r.year)
         if key not in cache:
-            cache[key] = resolve_one(r.target_text, r.country, r.year, by_country)
-        pid, disp, how = cache[key]
+            pid, disp, how = resolve_one(r.target_text, r.country, r.year,
+                                         by_country)
+            bloc = classify_bloc(r.target_text) if pid is None else None
+            cache[key] = (pid, disp, how, bloc)
+        pid, disp, how, bloc = cache[key]
         out.append((r.id, r.country, r.source_dataset, r.date, r.target_text,
-                    pid, disp, how))
+                    pid, disp, how, bloc))
 
     res = pd.DataFrame(out, columns=["id", "country", "source_dataset", "date",
                                      "target_text", "target_partyfacts_id",
-                                     "matched_name", "match_method"])
+                                     "matched_name", "match_method",
+                                     "target_bloc"])
 
     Path(config.ANALYSIS_DIR).mkdir(parents=True, exist_ok=True)
     res.to_parquet(OUT_PARQUET, index=False)
@@ -211,9 +264,16 @@ def main():
     print(by_c.sort_values("n", ascending=False).head(20).to_string())
     print(f"\nwrote {OUT_PARQUET}")
 
-    print("\nmost common unresolved target texts:")
-    unres = res[res["target_partyfacts_id"].isna()]
-    print(unres["target_text"].value_counts().head(20).to_string())
+    print("\nbloc references among the unresolved:")
+    print(res["target_bloc"].value_counts(dropna=True).to_string())
+    n_bloc = int(res["target_bloc"].notna().sum())
+    print(f"  -> {n_bloc:,} accusations aimed at a bloc rather than a named party")
+    print(f"  -> usable overall: {(n_ok + n_bloc)/max(len(res),1)*100:.1f}% "
+          f"(party-resolved or bloc-classified)")
+
+    print("\nmost common still-unresolved target texts:")
+    unres = res[res["target_partyfacts_id"].isna() & res["target_bloc"].isna()]
+    print(unres["target_text"].value_counts().head(25).to_string())
 
 
 if __name__ == "__main__":
