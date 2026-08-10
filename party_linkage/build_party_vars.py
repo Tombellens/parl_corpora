@@ -41,7 +41,6 @@ VPARTY_MEASURES = [
     "people_centrism",        # v2papeople
     "cultural_conservatism",  # index of the 5 items below (higher = conservative)
     "anti_pluralism",         # v2xpa_antiplural (called v2xpa_illiberal in v1)
-    "demonize_opponents",     # v2paopresp
 ]
 
 # Cultural dimension item set follows Medzihorsky & Lindberg (2024, Party
@@ -50,12 +49,15 @@ VPARTY_MEASURES = [
 CULTURAL_ITEMS = ["v2paimmig", "v2palgbt", "v2paculsup", "v2parelig", "v2pawomlab"]
 
 _DIRECT = {
-    "left_right":         "v2pariglef",
-    "populism":           "v2xpa_popul",
-    "anti_elitism":       "v2paanteli",
-    "people_centrism":    "v2papeople",
-    "demonize_opponents": "v2paopresp",
+    "left_right":      "v2pariglef",
+    "populism":        "v2xpa_popul",
+    "anti_elitism":    "v2paanteli",
+    "people_centrism": "v2papeople",
 }
+
+# Measures whose raw V-Party coding runs opposite to the name we give them, and
+# are therefore negated on load. (None at present.)
+_REVERSED = set()
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +158,9 @@ def load_vparty():
     else:
         vals["cultural_conservatism"] = pd.Series(np.nan, index=v.index)
         print("  WARNING: no cultural items present — cultural_conservatism is null")
+
+    for m in _REVERSED:                  # orient to match the variable name
+        vals[m] = -vals[m]
 
     missing = [m for m in VPARTY_MEASURES if vals[m].notna().sum() == 0]
     if missing:
@@ -285,8 +290,7 @@ CREATE TABLE IF NOT EXISTS party_vars (
     anti_elitism            REAL,
     people_centrism         REAL,
     cultural_conservatism   REAL,
-    anti_pluralism          REAL,
-    demonize_opponents      REAL
+    anti_pluralism          REAL
 );
 """
 

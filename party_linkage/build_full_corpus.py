@@ -49,7 +49,7 @@ NUM_VARS = {
     "vote_share_last", "vote_share_avg", "vote_share_avg_last3", "vote_share_delta",
     "in_cabinet", "is_pm_party", "years_since_government",
     "left_right", "populism", "anti_elitism", "people_centrism",
-    "cultural_conservatism", "anti_pluralism", "demonize_opponents",
+    "cultural_conservatism", "anti_pluralism",
 }
 
 
