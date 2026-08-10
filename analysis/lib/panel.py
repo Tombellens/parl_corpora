@@ -109,6 +109,87 @@ def load_panel():
     return df
 
 
+def load_party_panel(credit="all_cabinet"):
+    """PARTY-year panel: one row per (country, source_dataset, partyfacts_id, year).
+
+    Built for the accusee-side hypotheses (H2b, H4a, H4c), which are about party
+    attributes and are broken at the individual level: the government recode moved
+    ~42k minister-targets from `person` to `government`, so governing-party MPs
+    have artificially depleted individual received-counts. Here those accusations
+    are credited back to the parties in cabinet.
+
+        acc_received = acc_recv_person + acc_recv_gov
+
+    `credit` decides who receives an accusation aimed at "the government":
+        "all_cabinet" — every party in cabinet that year (default; an attack on
+                        the government is an attack on each governing party)
+        "pm_only"     — only the PM's party
+        "none"        — person-resolved accusations only (the old behaviour)
+
+    With "all_cabinet" one accusation appears in several party-year rows, so
+    cluster SEs by country-year.
+    """
+    import numpy as np
+    import pandas as pd
+
+    df = load_panel()
+    df = df.dropna(subset=["partyfacts_id"]).copy()
+    df["partyfacts_id"] = df["partyfacts_id"].astype("int64")
+
+    keys = ["country", "source_dataset", "partyfacts_id", "year"]
+    pp = (df.groupby(keys, dropna=False)
+            .agg(n_sentences=("n_sentences", "sum"),
+                 n_mps=("speaker_id", "nunique"),
+                 acc_made=("n_accusations_made", "sum"),
+                 acc_recv_person=("n_accusations_received", "sum"),
+                 party_name=("party_name", "first"),
+                 populism=("populism", "mean"),
+                 anti_elitism=("anti_elitism", "mean"),
+                 people_centrism=("people_centrism", "mean"),
+                 anti_pluralism=("anti_pluralism", "mean"),
+                 left_right=("left_right", "mean"),
+                 cultural_conservatism=("cultural_conservatism", "mean"),
+                 in_cabinet=("in_cabinet", "max"),
+                 is_pm_party=("is_pm_party", "max"),
+                 vote_share_last=("vote_share_last", "mean"),
+                 share_female=("female", lambda s: pd.to_numeric(s, errors="coerce").mean()),
+                 mean_age=("age", "mean"),
+                 mean_isced=("highest_isced", "mean"))
+            .reset_index())
+
+    # accusations aimed at "the government", by country-dataset-year
+    con = data.duck()
+    gov = con.execute("""
+        SELECT country, source_dataset,
+               CAST(substr(date, 1, 4) AS INT) AS year,
+               COUNT(*) AS n_gov_targets
+        FROM accusations
+        WHERE target_type = 'government'
+          AND date IS NOT NULL AND length(date) >= 4
+        GROUP BY 1, 2, 3
+    """).df()
+    con.close()
+
+    pp = pp.merge(gov, on=["country", "source_dataset", "year"], how="left")
+    pp["n_gov_targets"] = pp["n_gov_targets"].fillna(0)
+
+    if credit == "all_cabinet":
+        gets_gov = pp["in_cabinet"] == 1
+    elif credit == "pm_only":
+        gets_gov = pp["is_pm_party"] == 1
+    elif credit == "none":
+        gets_gov = pd.Series(False, index=pp.index)
+    else:
+        raise ValueError(f"unknown credit rule: {credit}")
+
+    pp["acc_recv_gov"] = np.where(gets_gov, pp["n_gov_targets"], 0)
+    pp["acc_received"] = pp["acc_recv_person"] + pp["acc_recv_gov"]
+
+    pp["log_exposure"] = np.log(pp["n_sentences"])
+    pp["country_year"] = pp["country"] + "_" + pp["year"].astype(str)
+    return pp
+
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
