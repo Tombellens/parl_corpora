@@ -112,7 +112,7 @@ def load_panel():
 PARTY_TARGETS_PARQUET = data.ANALYSIS_DIR / "target_party_resolution.parquet"
 
 
-def load_party_panel(credit="none"):
+def load_party_panel(credit="bloc"):
     """PARTY-year panel: one row per (country, source_dataset, partyfacts_id, year).
 
     Built for the accusee-side hypotheses (H2b, H4a, H4c), which concern party
@@ -120,23 +120,26 @@ def load_party_panel(credit="none"):
     ~42k minister-targets out of the person-level DV, so governing-party MPs have
     artificially depleted individual received-counts.
 
-        acc_received = acc_recv_person + acc_recv_party
+        acc_received = acc_recv_person + acc_recv_party + acc_recv_bloc
 
-    `acc_recv_party` comes from accusations whose TARGET was a named political
-    party, resolved to a PartyFacts id by party_linkage/resolve_party_targets.py.
-    This is the symmetric measure: governing and opposition parties are equally
-    nameable in text and were matched by the identical procedure.
+    Three routes by which a party can be accused:
+      acc_recv_person — a named MP of that party was the target
+      acc_recv_party  — the party itself was named (resolve_party_targets.py)
+      acc_recv_bloc   — "the government" for incumbents, "the opposition" for
+                        the rest, DIVIDED by the number of parties on that side
+                        so one accusation is not multiplied across coalition
+                        partners
 
-    `credit` controls whether accusations aimed at "the government" as a bloc are
-    also added, and defaults to OFF:
-        "none"        — recommended. Party-directed + person-resolved only.
-        "all_cabinet" — adds the whole country-year government-target count to
-                        every cabinet party. DO NOT USE for hypothesis testing:
-                        it assigns a large block of accusations to incumbents by
-                        construction while the opposition keeps a censored DV,
-                        which produced an in_cabinet IRR of ~12 and flipped
-                        unrelated coefficients. Retained only for diagnostics.
-        "pm_only"     — same objection, smaller.
+    The bloc term is what makes H4c testable: attacks on the executive are the
+    single largest target category and are aimed at incumbents by definition, so
+    excluding them would omit most of the evidence. It is symmetric because the
+    opposition bloc is credited the same way.
+
+    `credit`:
+        "bloc"    — default, as above
+        "none"    — named targets only (persons + parties); use to see how much
+                    the bloc term is doing
+        "pm_only" — government bloc to the PM's party alone, undivided
     """
     import numpy as np
     import pandas as pd
@@ -186,7 +189,7 @@ def load_party_panel(credit="none"):
               f"party_linkage/resolve_party_targets.py; acc_recv_party = 0")
         pp["acc_recv_party"] = 0
 
-    # accusations aimed at "the government", by country-dataset-year (diagnostic)
+    # --- bloc-directed accusations, by country-dataset-year -----------------
     con = data.duck()
     gov = con.execute("""
         SELECT country, source_dataset,
@@ -198,22 +201,59 @@ def load_party_panel(credit="none"):
         GROUP BY 1, 2, 3
     """).df()
     con.close()
-
     pp = pp.merge(gov, on=["country", "source_dataset", "year"], how="left")
     pp["n_gov_targets"] = pp["n_gov_targets"].fillna(0)
 
-    if credit == "all_cabinet":
-        gets_gov = pp["in_cabinet"] == 1
+    # "the opposition" / "those opposite": the mirror of the government bloc,
+    # picked up by resolve_party_targets.py when a party target had no name.
+    if PARTY_TARGETS_PARQUET.exists():
+        bl = pd.read_parquet(PARTY_TARGETS_PARQUET,
+                             columns=["country", "source_dataset", "date",
+                                      "target_bloc"])
+        bl = bl[bl["target_bloc"].isin(["opposition", "government"])].copy()
+        bl["year"] = pd.to_numeric(bl["date"].astype(str).str[:4], errors="coerce")
+        bl = bl.dropna(subset=["year"])
+        bl["year"] = bl["year"].astype("int64")
+        wide = (bl.groupby(["country", "source_dataset", "year", "target_bloc"])
+                  .size().unstack(fill_value=0).reset_index())
+        wide = wide.rename(columns={"opposition": "n_opp_targets",
+                                    "government": "n_gov_bloc_extra"})
+        pp = pp.merge(wide, on=["country", "source_dataset", "year"], how="left")
+    for col in ("n_opp_targets", "n_gov_bloc_extra"):
+        if col not in pp.columns:
+            pp[col] = 0
+        pp[col] = pp[col].fillna(0)
+    pp["n_gov_targets"] = pp["n_gov_targets"] + pp["n_gov_bloc_extra"]
+
+    # --- bloc-directed accusations, split across the parties on each side ----
+    # "the government" is an attack on the incumbents; "the opposition" on the
+    # opposition. Each bloc count is DIVIDED by the number of parties on that
+    # side, so a single accusation is not multiplied across coalition partners.
+    grp = ["country", "source_dataset", "year"]
+    n_gov_parties = (pp.assign(g=(pp["in_cabinet"] == 1).astype(int))
+                       .groupby(grp)["g"].transform("sum"))
+    n_opp_parties = (pp.assign(o=(pp["in_cabinet"] != 1).astype(int))
+                       .groupby(grp)["o"].transform("sum"))
+
+    in_gov = pp["in_cabinet"] == 1
+    pp["acc_recv_bloc"] = np.where(
+        in_gov,
+        pp["n_gov_targets"] / n_gov_parties.replace(0, np.nan),
+        pp["n_opp_targets"] / n_opp_parties.replace(0, np.nan),
+    )
+    pp["acc_recv_bloc"] = pp["acc_recv_bloc"].fillna(0)
+
+    if credit == "bloc":                       # default: symmetric bloc credit
+        bloc = pp["acc_recv_bloc"]
     elif credit == "pm_only":
-        gets_gov = pp["is_pm_party"] == 1
+        bloc = np.where(pp["is_pm_party"] == 1, pp["n_gov_targets"], 0)
     elif credit == "none":
-        gets_gov = pd.Series(False, index=pp.index)
+        bloc = 0
     else:
         raise ValueError(f"unknown credit rule: {credit}")
 
-    pp["acc_recv_gov"] = np.where(gets_gov, pp["n_gov_targets"], 0)
-    pp["acc_received"] = (pp["acc_recv_person"] + pp["acc_recv_party"]
-                          + pp["acc_recv_gov"])
+    pp["acc_received"] = (pp["acc_recv_person"] + pp["acc_recv_party"] + bloc)
+    pp["acc_received"] = pp["acc_received"].round().astype("int64")
 
     pp["log_exposure"] = np.log(pp["n_sentences"])
     pp["country_year"] = pp["country"] + "_" + pp["year"].astype(str)
